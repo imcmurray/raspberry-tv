@@ -8,46 +8,96 @@ import logging
 from io import BytesIO
 from datetime import datetime
 
-# Read configuration from /etc/slideshow.conf
-config = configparser.ConfigParser()
-config.read('/etc/slideshow.conf')
-couchdb_url = config['settings']['couchdb_url']
-tv_uuid = config['settings']['tv_uuid']
-manager_url = config['settings']['manager_url']
+import sys # For sys.exit
+
+# Define Configuration Path
+CONFIG_FILE_PATH = '/etc/slideshow.conf'
+
+# Function to load configuration
+def load_config(config_path):
+    config = configparser.ConfigParser()
+    if not config.read(config_path):
+        # This specific check might be tricky if read returns an empty list on success with empty file
+        # A better check is usually for specific sections/options after attempting to read.
+        # However, if the file is critical and not found, config.read returns an empty list.
+        logging.error(f"Critical: Configuration file {config_path} not found or is empty.")
+        print(f"Critical: Configuration file {config_path} not found or is empty.", file=sys.stderr)
+        sys.exit(1)
+        
+    if not config.has_section('settings'):
+        logging.error(f"Critical: Configuration file {config_path} is missing the [settings] section.")
+        print(f"Critical: Configuration file {config_path} is missing the [settings] section.", file=sys.stderr)
+        sys.exit(1)
+    return config
+
+# Load configuration
+config = load_config(CONFIG_FILE_PATH)
+
+# Read essential settings
+try:
+    couchdb_url = config.get('settings', 'couchdb_url')
+    tv_uuid = config.get('settings', 'tv_uuid')
+    manager_url = config.get('settings', 'manager_url') # Used in default message
+except configparser.NoOptionError as e:
+    logging.error(f"Critical: Missing essential configuration in {CONFIG_FILE_PATH}: {e}")
+    print(f"Critical: Missing essential configuration in {CONFIG_FILE_PATH}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+# Read optional settings (example for office hours, not currently used in logic but shows pattern)
+office_start_time_str = config.get('settings', 'office_start_time', fallback=None)
+office_end_time_str = config.get('settings', 'office_end_time', fallback=None)
+
 
 # Custom logging handler to send logs to CouchDB
+# Initialize logger early for load_config issues, but CouchDBHandler needs couchdb_url
+# We will re-initialize logging after config is loaded if CouchDBHandler is to be used.
+# For now, basic logging before this point will go to console if logger is touched.
+
 class CouchDBHandler(logging.Handler):
-    def __init__(self, couchdb_url, db_name, tv_uuid):
+    def __init__(self, couchdb_url_param, db_name, tv_uuid_param):
         super().__init__()
-        self.couchdb_url = couchdb_url
+        self.couchdb_url = couchdb_url_param
         self.db_name = db_name
-        self.tv_uuid = tv_uuid
+        self.tv_uuid = tv_uuid_param
+    def __init__(self, couchdb_url_param, db_name, tv_uuid_param): # Renamed params to avoid clash
+        super().__init__()
+        self.couchdb_url = couchdb_url_param
+        self.db_name = db_name
+        self.tv_uuid = tv_uuid_param
 
     def emit(self, record):
         log_entry = self.format(record)
         doc = {
-            "tv_uuid": self.tv_uuid,
+            "tv_uuid": self.tv_uuid, # Uses the instance variable
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "message": log_entry
         }
         try:
+            # Uses the instance variable self.couchdb_url
             response = requests.post(f"{self.couchdb_url}/{self.db_name}", json=doc)
             if response.status_code not in (201, 202):
-                raise Exception(f"Failed to log to CouchDB: {response.status_code}")
+                # Using logger here might be problematic if this handler itself is failing
+                print(f"Failed to log to CouchDB: {response.status_code}", file=sys.stderr)
         except requests.RequestException as e:
-            print(f"Error logging to CouchDB: {e}")
+            print(f"Error logging to CouchDB: {e}", file=sys.stderr)
 
 # Set up logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-couchdb_handler = CouchDBHandler(couchdb_url, "logs", tv_uuid)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-couchdb_handler.setFormatter(formatter)
-logger.addHandler(couchdb_handler)
-file_handler = logging.FileHandler('/var/log/slideshow.log')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+# Basic file logger first
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler('/var/log/slideshow.log')])
+logger = logging.getLogger() # Get root logger
+
+# Now add CouchDBHandler if configured
+if couchdb_url and tv_uuid: # Ensure essential vars for CouchDBHandler are present
+    couchdb_handler = CouchDBHandler(couchdb_url, "logs", tv_uuid)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s') # Already defined by basicConfig, but explicit for handler
+    couchdb_handler.setFormatter(formatter)
+    logger.addHandler(couchdb_handler)
+else:
+    logger.warning("CouchDB URL or TV UUID not configured. CouchDB logging will be disabled.")
+
 
 # Initialize Pygame
 pygame.init()
