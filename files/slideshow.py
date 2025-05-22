@@ -6,7 +6,7 @@ import threading
 import configparser
 import logging
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timezone # Added timezone
 
 import sys # For sys.exit
 
@@ -204,6 +204,42 @@ def fetch_image(image_name, text_params=None):
         logger.error(f"Error fetching image: {e}")
         return None
 
+# Function to update TV status document in CouchDB
+def update_tv_status(couchdb_base_url, tv_doc_uuid, current_slide_info):
+    status_doc_id = f"status_{tv_doc_uuid}"
+    status_doc_url = f"{couchdb_base_url}/slideshows/{status_doc_id}" # Assumes 'slideshows' is the DB name
+
+    current_rev = None
+    try:
+        response = requests.get(status_doc_url, timeout=5)
+        if response.status_code == 200:
+            current_rev = response.json().get('_rev')
+        elif response.status_code != 404:
+            logger.warning(f"Error fetching status doc {status_doc_id}: {response.status_code} - {response.text}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error fetching status doc {status_doc_id}: {e}")
+
+    status_data = {
+        "type": "tv_status",
+        "tv_uuid": tv_doc_uuid,
+        "current_slide_id": current_slide_info['id'], # Filename used as ID for slide item
+        "current_slide_filename": current_slide_info['filename'],
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    if current_rev:
+        status_data['_rev'] = current_rev
+
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.put(status_doc_url, json=status_data, headers=headers, timeout=5)
+        if response.status_code not in [200, 201]:
+            logger.error(f"Error updating status doc {status_doc_id}: {response.status_code} - {response.text}")
+        else:
+            logger.info(f"Successfully updated status for {tv_doc_uuid} to slide {current_slide_info['filename']}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error updating status doc {status_doc_id}: {e}")
+
+
 # Background thread to watch for changes in CouchDB
 def watch_changes():
     while True:
@@ -252,10 +288,15 @@ while True:
                     if image:
                         slides.append({
                             'image': image, # Image now has text rendered on it
-                            'duration': slide_doc['duration']
+                            'duration': slide_doc['duration'],
+                            'id': slide_doc['name'], # Filename used as ID for slide item
+                            'filename': slide_doc['name']
                         })
                 if slides:
                     state = "slideshow"
+                    # Report status for the first slide
+                    first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
+                    update_tv_status(couchdb_url, tv_uuid, first_slide_info)
                 else:
                     state = "default"
             else:
@@ -286,21 +327,29 @@ while True:
                     if image:
                         slides.append({
                             'image': image, # Image now has text rendered on it
-                            'duration': slide_doc['duration']
+                            'duration': slide_doc['duration'],
+                            'id': slide_doc['name'], # Filename used as ID for slide item
+                            'filename': slide_doc['name']
                         })
                 if slides:
                     state = "slideshow"
+                    # Report status for the first slide
+                    first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
+                    update_tv_status(couchdb_url, tv_uuid, first_slide_info)
             time.sleep(1)
     elif state == "slideshow":
-        for slide_data in slides: # Renamed to slide_data
+        for slide_data in slides: # slide_data now contains 'id' and 'filename'
+            current_display_slide_info = {'id': slide_data['id'], 'filename': slide_data['filename']}
+            update_tv_status(couchdb_url, tv_uuid, current_display_slide_info) # Update status before showing
+
             start_time = time.time()
             while time.time() - start_time < slide_data['duration']:
                 if need_refetch.is_set():
                     need_refetch.clear()
                     doc = fetch_document()
                     if doc:
-                        new_slides_temp = [] # Build new list of slides
-                        for s_doc in doc['slides']: # Renamed to s_doc
+                        new_slides_temp = [] 
+                        for s_doc in doc['slides']: 
                             text_params = {
                                 'text': s_doc.get('text'),
                                 'text_color': s_doc.get('text_color'),
@@ -311,25 +360,29 @@ while True:
                             if image:
                                 new_slides_temp.append({
                                     'image': image,
-                                    'duration': s_doc['duration']
+                                    'duration': s_doc['duration'],
+                                    'id': s_doc['name'], 
+                                    'filename': s_doc['name']
                                 })
-                        slides = new_slides_temp # Assign new list to slides
+                        slides = new_slides_temp 
                         if not slides:
                             state = "default"
-                            break 
-                    else: # doc is None
+                        else:
+                            # Report status for the first slide of the new set
+                            first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
+                            update_tv_status(couchdb_url, tv_uuid, first_slide_info)
+                    else: 
                         state = "default"
+                    
+                    if state == "default": # Break from inner while loop if state changed
                         break 
-                    # If slides were reloaded, we need to break from inner while and outer for to restart slideshow with new slides
-                    if state == "default" or need_refetch.is_set(): # need_refetch check is belt-and-suspenders
-                        break # Break from inner while loop
                 
                 if state == "default": # Check again if state changed due to refetch
                     break # Break from inner while loop
 
                 screen.blit(slide_data['image'], (0, 0))
                 pygame.display.flip()
-                time.sleep(1) # Check for events or refetch more frequently if needed
+                time.sleep(1) 
             
-            if state == "default" or need_refetch.is_set(): # If state changed, break from for loop
+            if state == "default": # If state changed, break from for loop
                 break
