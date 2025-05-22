@@ -1,0 +1,10 @@
+- hosts: raspberry_pi
+  become: yes
+  vars_files:
+    - vars/main.yml
+  roles:
+    - common
+    - network
+    - hdmi
+    - app
+    - time

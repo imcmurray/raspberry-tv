@@ -1,0 +1,19 @@
+- name: Update package list
+  apt:
+    update_cache: yes
+
+- name: Upgrade packages
+  apt:
+    upgrade: safe
+
+- name: Install pip
+  apt:
+    name: python3-pip
+    state: present
+
+- name: Install Python libraries
+  pip:
+    name:
+      - pygame
+      - requests
+    executable: pip3

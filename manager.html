@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Slideshow Manager</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; transition: background 0.3s, color 0.3s; }
+    body.light { background: #fff; color: #333; }
+    body.dark { background: #222; color: #ddd; }
+    #slideshow-manager { max-width: 900px; margin: 20px auto; padding: 0 15px; }
+    #controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    #image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
+    .image-item { position: relative; cursor: pointer; }
+    .image-item img { width: 100%; height: auto; border-radius: 5px; }
+    .image-item.selected { outline: 2px solid blue; }
+    .image-details { margin-top: 5px; }
+    .image-details input, .image-details select { width: 100%; margin: 5px 0; padding: 5px; }
+    .image-details input[type="color"] { width: 50px; height: 30px; padding: 0; }
+    .delete-button { position: absolute; top: 5px; right: 5px; background: red; color: white; border: none; border-radius: 3px; cursor: pointer; padding: 5px; }
+    .current-image { border: 2px solid red; }
+    #save-button, #bulk-delete, #theme-toggle, #add-tv-button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 10px 5px; }
+    #save-button:hover, #bulk-delete:hover, #theme-toggle:hover, #add-tv-button:hover { background: #45a049; }
+    #file-input, #tv-name-input, #new-tv-uuid { margin: 10px 0; padding: 5px; }
+    #drop-zone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin: 10px 0; }
+    #drop-zone.dragover { background: #e0e0e0; }
+    #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; }
+    #modal img { max-width: 90%; max-height: 90%; }
+    #modal-content { background: white; padding: 20px; border-radius: 5px; text-align: center; }
+    .dark #modal-content { background: #333; color: #ddd; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 10px 20px; border-radius: 5px; display: none; }
+    #loading { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); color: white; padding: 10px 20px; border-radius: 5px; }
+    #default-message { text-align: center; margin: 50px 0; }
+    #default-message p { font-size: 1.2em; }
+    @media (max-width: 600px) { #image-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+  </style>
+</head>
+<body class="light">
+  <div id="slideshow-manager">
+    <h1>Slideshow Manager</h1>
+    <div id="controls">
+      <div>
+        <select id="tv-select"><option value="">Select a TV</option></select>
+        <input id="tv-name-input" placeholder="Rename TV" style="display:none;">
+        <button id="rename-button" style="display:none;">Rename</button>
+      </div>
+      <div>
+        <button id="bulk-delete" style="display:none;">Delete Selected</button>
+        <button id="theme-toggle">Dark Mode</button>
+      </div>
+    </div>
+    <div id="default-message">
+      <p>No TVs configured. Add a new TV below to start managing slideshows.</p>
+      <input id="new-tv-uuid" placeholder="Enter TV UUID (e.g., 550e8400-e29b-41d4-a716-446655440000)">
+      <button id="add-tv-button">Add New TV</button>
+    </div>
+    <div id="image-grid" style="display:none;"></div>
+    <div id="drop-zone" style="display:none;">Drag & Drop Images Here or Click to Upload<input type="file" id="file-input" multiple accept="image/*" style="display:none;"></div>
+    <button id="save-button" style="display:none;">Save Changes</button>
+  </div>
+  <div id="modal"><div id="modal-content"><img id="modal-image"><p id="modal-meta"></p><button onclick="closeModal()">Close</button></div></div>
+  <div id="toast"></div>
+  <div id="loading">Loading...</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.14.0/Sortable.min.js"></script>
+  <script>
+    const dbUrl = 'http://couchdb.utb.circ10.dcn:80/slideshows';
+    let currentTvId = null, currentRev = null, localSlides = [], history = [], historyIndex = -1;
+    let selectedSlides = new Set();
+    let hasUnsavedChanges = false; // Track unsaved changes
+
+    // Initialize theme
+    if (localStorage.getItem('theme') === 'dark') document.body.classList.toggle('dark');
+
+    // Fetch TVs and monitor changes
+    async function loadTvs() {
+      const response = await fetch(`${dbUrl}/_all_docs`);
+      const data = await response.json();
+      const select = document.getElementById('tv-select');
+      select.innerHTML = '<option value="">Select a TV</option>';
+      if (data.rows.length === 0) {
+        showDefaultMessage();
+      } else {
+        const tvPromises = data.rows.map(async row => {
+          const doc = await (await fetch(`${dbUrl}/${row.id}`)).json();
+          const option = document.createElement('option');
+          option.value = row.id;
+          option.textContent = doc.name || row.id;
+          option.dataset.status = doc.current_slide ? 'Online' : 'Offline';
+          select.appendChild(option);
+        });
+        await Promise.all(tvPromises);
+        hideDefaultMessage();
+        listenForChanges();
+      }
+    }
+    loadTvs();
+
+    // Add new TV
+    document.getElementById('add-tv-button').addEventListener('click', async () => {
+      const uuid = document.getElementById('new-tv-uuid').value.trim();
+      if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+        showToast('Please enter a valid UUID');
+        return;
+      }
+      showLoading();
+      try {
+        const response = await fetch(`${dbUrl}/${uuid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: `TV ${uuid.slice(0, 8)}`, slides: [], current_slide: null })
+        });
+        if (response.ok) {
+          const option = document.createElement('option');
+          option.value = uuid;
+          option.textContent = `TV ${uuid.slice(0, 8)} (Offline)`;
+          document.getElementById('tv-select').appendChild(option);
+          document.getElementById('new-tv-uuid').value = '';
+          hideDefaultMessage();
+          showToast('TV added successfully');
+        } else {
+          showToast('Failed to add TV');
+        }
+      } catch (error) {
+        console.error('Error adding TV:', error);
+        showToast('Failed to add TV');
+      }
+      hideLoading();
+    });
+
+    // Real-time updates via _changes feed
+    function listenForChanges() {
+      fetch(`${dbUrl}/_changes?feed=continuous&heartbeat=10000&since=now`, { headers: { Accept: 'text/event-stream' } })
+        .then(response => {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          function read() {
+            reader.read().then(({ done, value }) => {
+              if (done) return;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop();
+              lines.forEach(line => {
+                if (line.trim()) {
+                  const change = JSON.parse(line);
+                  if (change.id === currentTvId && !hasUnsavedChanges) {
+                    fetch(`${dbUrl}/${currentTvId}`).then(res => res.json()).then(doc => {
+                      currentRev = doc._rev;
+                      localSlides = doc.slides || [];
+                      displaySlides(currentTvId, localSlides, doc.current_slide);
+                    });
+                  }
+                  updateTvStatus(change.id);
+                }
+              });
+              read();
+            });
+          }
+          read();
+        })
+        .catch(error => console.error('Changes feed error:', error));
+    }
+
+    // Update TV status
+    async function updateTvStatus(id) {
+      const doc = await (await fetch(`${dbUrl}/${id}`)).json();
+      const option = document.querySelector(`#tv-select option[value="${id}"]`);
+      if (option) {
+        option.dataset.status = doc.current_slide ? 'Online' : 'Offline';
+        option.textContent = (doc.name || id) + (doc.current_slide ? ' (Online)' : ' (Offline)');
+      }
+    }
+
+    // Handle TV selection
+    document.getElementById('tv-select').addEventListener('change', async function() {
+      currentTvId = this.value;
+      document.getElementById('tv-name-input').style.display = currentTvId ? 'inline' : 'none';
+      document.getElementById('rename-button').style.display = currentTvId ? 'inline' : 'none';
+      if (currentTvId) {
+        showLoading();
+        const doc = await (await fetch(`${dbUrl}/${currentTvId}`)).json();
+        currentRev = doc._rev;
+        localSlides = doc.slides || [];
+        history = [{ slides: localSlides.map(s => ({ ...s })) }];
+        historyIndex = 0;
+        displaySlides(currentTvId, localSlides, doc.current_slide);
+        hasUnsavedChanges = false; // Reset unsaved changes flag
+        hideDefaultMessage();
+        hideLoading();
+      } else {
+        document.getElementById('image-grid').innerHTML = '';
+        showDefaultMessage();
+      }
+    });
+
+    // Rename TV
+    document.getElementById('rename-button').addEventListener('click', async () => {
+      const name = document.getElementById('tv-name-input').value.trim();
+      if (!name || !currentTvId) return;
+      const doc = await (await fetch(`${dbUrl}/${currentTvId}`)).json();
+      doc.name = name;
+      const response = await fetch(`${dbUrl}/${currentTvId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(doc)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        currentRev = data.rev;
+        const option = document.querySelector(`#tv-select option[value="${currentTvId}"]`);
+        option.textContent = name + (doc.current_slide ? ' (Online)' : ' (Offline)');
+        showToast('TV renamed successfully');
+      } else {
+        showToast('Failed to rename TV');
+      }
+    });
+
+    // Display slides
+    function displaySlides(tvId, slides, currentSlide) {
+      const grid = document.getElementById('image-grid');
+      grid.innerHTML = '';
+      slides.forEach(slide => {
+        if (!slide || !slide.name) {
+          console.warn('Skipping invalid slide:', slide);
+          return;
+        }
+        const item = document.createElement('div');
+        item.className = 'image-item';
+        if (slide.name === currentSlide) item.classList.add('current-image');
+        if (selectedSlides.has(slide.name)) item.classList.add('selected');
+        const img = document.createElement('img');
+        img.src = `${dbUrl}/${tvId}/${slide.name}`;
+        img.addEventListener('click', () => showModal(img.src, slide));
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.className = 'delete-button';
+        deleteBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          localSlides = localSlides.filter(s => s && s.name !== slide.name);
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+          item.remove();
+        });
+        const details = document.createElement('div');
+        details.className = 'image-details';
+        const textInput = document.createElement('input');
+        textInput.type = 'text';
+        textInput.value = slide.text || '';
+        textInput.placeholder = 'Text or {datetime}';
+        textInput.addEventListener('input', () => {
+          slide.text = textInput.value;
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        });
+        const sizeSelect = document.createElement('select');
+        ['small', 'medium', 'large'].forEach(size => {
+          const option = document.createElement('option');
+          option.value = size;
+          option.textContent = size.charAt(0).toUpperCase() + size.slice(1);
+          if (size === (slide.text_size || 'medium')) option.selected = true;
+          sizeSelect.appendChild(option);
+        });
+        sizeSelect.addEventListener('change', () => {
+          slide.text_size = sizeSelect.value;
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        });
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = slide.text_color || '#ffffff';
+        colorInput.addEventListener('input', () => {
+          slide.text_color = colorInput.value;
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        });
+        const positionSelect = document.createElement('select');
+        ['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'].forEach(pos => {
+          const option = document.createElement('option');
+          option.value = pos;
+          option.textContent = pos.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+          if (pos === (slide.text_position || 'bottom-center')) option.selected = true;
+          positionSelect.appendChild(option);
+        });
+        positionSelect.addEventListener('change', () => {
+          slide.text_position = positionSelect.value;
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        });
+        const durationSelect = document.createElement('select');
+        [5, 10, 15, 30, 60].forEach(t => {
+          const option = document.createElement('option');
+          option.value = t;
+          option.textContent = `${t} seconds`;
+          if (t === (slide.duration || 10)) option.selected = true;
+          durationSelect.appendChild(option);
+        });
+        durationSelect.addEventListener('change', () => {
+          slide.duration = parseInt(durationSelect.value);
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        });
+        details.appendChild(textInput);
+        details.appendChild(sizeSelect);
+        details.appendChild(colorInput);
+        details.appendChild(positionSelect);
+        details.appendChild(durationSelect);
+        item.appendChild(img);
+        item.appendChild(deleteBtn);
+        item.appendChild(details);
+        item.addEventListener('click', e => {
+          if (e.ctrlKey || e.metaKey) {
+            if (selectedSlides.has(slide.name)) {
+              selectedSlides.delete(slide.name);
+              item.classList.remove('selected');
+            } else {
+              selectedSlides.add(slide.name);
+              item.classList.add('selected');
+            }
+            document.getElementById('bulk-delete').style.display = selectedSlides.size ? 'inline' : 'none';
+          }
+        });
+        grid.appendChild(item);
+        item.slide = slide;
+      });
+      new Sortable(grid, {
+        animation: 150,
+        onUpdate: () => {
+          const newOrder = Array.from(grid.children).map(item => {
+            if (!item.slide) {
+              console.error('Item without slide:', item);
+              return null;
+            }
+            return item.slide;
+          }).filter(slide => slide);
+          localSlides = newOrder;
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          addToHistory();
+        }
+      });
+    }
+
+    // Image preview modal
+    async function showModal(src, slide) {
+      const modal = document.getElementById('modal');
+      const modalImg = document.getElementById('modal-image');
+      const modalMeta = document.getElementById('modal-meta');
+      modalImg.src = src;
+      const attachment = (await (await fetch(`${dbUrl}/${currentTvId}`)).json())._attachments[slide.name];
+      modalMeta.textContent = `Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, Type: ${attachment.content_type}, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s`;
+      modal.style.display = 'flex';
+    }
+    function closeModal() {
+      document.getElementById('modal').style.display = 'none';
+    }
+
+    // Drag-and-drop and file input
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+    async function handleFiles(files) {
+      if (!currentTvId) {
+        showToast('Please select a TV first');
+        fileInput.value = '';
+        return;
+      }
+      showLoading();
+      for (let file of files) {
+        const uniqueName = Date.now() + '_' + file.name;
+        const uploadUrl = `${dbUrl}/${currentTvId}/${uniqueName}?rev=${currentRev}`;
+        try {
+          const response = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': file.type },
+            body: file,
+          });
+          if (!response.ok) throw new Error('Upload failed');
+          const data = await response.json();
+          currentRev = data.rev;
+          const slide = { name: uniqueName, text: '', text_size: 'medium', text_color: '#ffffff', text_position: 'bottom-center', duration: 10 };
+          localSlides.push(slide);
+          hasUnsavedChanges = true; // Set unsaved changes flag
+          const item = document.createElement('div');
+          item.className = 'image-item';
+          const img = document.createElement('img');
+          img.src = `${dbUrl}/${currentTvId}/${uniqueName}`;
+          img.addEventListener('click', () => showModal(img.src, slide));
+          const deleteBtn = document.createElement('button');
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.className = 'delete-button';
+          deleteBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            localSlides = localSlides.filter(s => s && s.name !== uniqueName);
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+            item.remove();
+          });
+          const details = document.createElement('div');
+          details.className = 'image-details';
+          const textInput = document.createElement('input');
+          textInput.type = 'text';
+          textInput.placeholder = 'Text or {datetime}';
+          textInput.addEventListener('input', () => {
+            slide.text = textInput.value;
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+          });
+          const sizeSelect = document.createElement('select');
+          ['small', 'medium', 'large'].forEach(size => {
+            const option = document.createElement('option');
+            option.value = size;
+            option.textContent = size.charAt(0).toUpperCase() + size.slice(1);
+            if (size === 'medium') option.selected = true;
+            sizeSelect.appendChild(option);
+          });
+          sizeSelect.addEventListener('change', () => {
+            slide.text_size = sizeSelect.value;
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+          });
+          const colorInput = document.createElement('input');
+          colorInput.type = 'color';
+          colorInput.value = '#ffffff';
+          colorInput.addEventListener('input', () => {
+            slide.text_color = colorInput.value;
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+          });
+          const positionSelect = document.createElement('select');
+          ['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'].forEach(pos => {
+            const option = document.createElement('option');
+            option.value = pos;
+            option.textContent = pos.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+            if (pos === 'bottom-center') option.selected = true;
+            positionSelect.appendChild(option);
+          });
+          positionSelect.addEventListener('change', () => {
+            slide.text_position = positionSelect.value;
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+          });
+          const durationSelect = document.createElement('select');
+          [5, 10, 15, 30, 60].forEach(t => {
+            const option = document.createElement('option');
+            option.value = t;
+            option.textContent = `${t} seconds`;
+            if (t === 10) option.selected = true;
+            durationSelect.appendChild(option);
+          });
+          durationSelect.addEventListener('change', () => {
+            slide.duration = parseInt(durationSelect.value);
+            hasUnsavedChanges = true; // Set unsaved changes flag
+            addToHistory();
+          });
+          details.appendChild(textInput);
+          details.appendChild(sizeSelect);
+          details.appendChild(colorInput);
+          details.appendChild(positionSelect);
+          details.appendChild(durationSelect);
+          item.appendChild(img);
+          item.appendChild(deleteBtn);
+          item.appendChild(details);
+          item.addEventListener('click', e => {
+            if (e.ctrlKey || e.metaKey) {
+              if (selectedSlides.has(uniqueName)) {
+                selectedSlides.delete(uniqueName);
+                item.classList.remove('selected');
+              } else {
+                selectedSlides.add(uniqueName);
+                item.classList.add('selected');
+              }
+              document.getElementById('bulk-delete').style.display = selectedSlides.size ? 'inline' : 'none';
+            }
+          });
+          document.getElementById('image-grid').appendChild(item);
+          item.slide = slide;
+          addToHistory();
+        } catch (error) {
+          console.error('Error uploading file:', error);
+          showToast('Failed to upload image: ' + file.name);
+        }
+      }
+      fileInput.value = '';
+      hideLoading();
+    }
+
+    // Bulk delete
+    document.getElementById('bulk-delete').addEventListener('click', () => {
+      localSlides = localSlides.filter(slide => !selectedSlides.has(slide.name));
+      selectedSlides.clear();
+      hasUnsavedChanges = true; // Set unsaved changes flag
+      addToHistory();
+      document.getElementById('bulk-delete').style.display = 'none';
+      displaySlides(currentTvId, localSlides, null);
+    });
+
+    // Save changes
+    document.getElementById('save-button').addEventListener('click', async () => {
+      if (!currentTvId) {
+        showToast('Please select a TV');
+        return;
+      }
+      showLoading();
+      try {
+        const response = await fetch(`${dbUrl}/${currentTvId}`);
+        if (!response.ok) throw new Error('Failed to fetch latest document');
+        const latestDoc = await response.json();
+
+        // Identify deleted slides
+        const currentSlides = latestDoc.slides || [];
+        const deletedSlides = currentSlides.filter(cs => !localSlides.some(ls => ls.name === cs.name));
+
+        // Prepare updated attachments
+        const updatedAttachments = { ...latestDoc._attachments };
+        deletedSlides.forEach(slide => {
+          if (updatedAttachments[slide.name]) {
+            delete updatedAttachments[slide.name];
+          }
+        });
+
+        const updatedDoc = {
+          _id: currentTvId,
+          _rev: latestDoc._rev,
+          slides: localSlides,
+          current_slide: latestDoc.current_slide,
+          name: latestDoc.name,
+          _attachments: updatedAttachments || {}
+        };
+        const putResponse = await fetch(`${dbUrl}/${currentTvId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedDoc)
+        });
+        if (!putResponse.ok) {
+          if (putResponse.status === 409) {
+            showToast('Conflict: Document updated elsewhere. Please refresh.');
+          } else {
+            throw new Error('Save failed');
+          }
+        } else {
+          const data = await putResponse.json();
+          currentRev = data.rev;
+          const latestDocAfterSave = await (await fetch(`${dbUrl}/${currentTvId}`)).json();
+          localSlides = latestDocAfterSave.slides || [];
+          displaySlides(currentTvId, localSlides, latestDocAfterSave.current_slide);
+          hasUnsavedChanges = false; // Reset unsaved changes flag
+          showToast('Changes saved successfully');
+        }
+      } catch (error) {
+        console.error('Error saving document:', error);
+        showToast('Failed to save changes');
+      }
+      hideLoading();
+    });
+
+    // Undo/Redo
+    function addToHistory() {
+      history = history.slice(0, historyIndex + 1);
+      history.push({ slides: localSlides.map(s => ({ ...s })) });
+      historyIndex++;
+    }
+    document.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'z' && historyIndex > 0) {
+        historyIndex--;
+        localSlides = history[historyIndex].slides.map(s => ({ ...s }));
+        displaySlides(currentTvId, localSlides, null);
+        hasUnsavedChanges = true; // Set unsaved changes flag after undo
+      } else if (e.ctrlKey && e.key === 'y' && historyIndex < history.length - 1) {
+        historyIndex++;
+        localSlides = history[historyIndex].slides.map(s => ({ ...s }));
+        displaySlides(currentTvId, localSlides, null);
+        hasUnsavedChanges = true; // Set unsaved changes flag after redo
+      }
+    });
+
+    // Theme toggle
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+      document.body.classList.toggle('dark');
+      localStorage.setItem('theme', document.body.classList.contains('dark') ? 'dark' : 'light');
+      document.getElementById('theme-toggle').textContent = document.body.classList.contains('dark') ? 'Light Mode' : 'Dark Mode';
+    });
+
+    // Default message and UI toggles
+    function showDefaultMessage() {
+      document.getElementById('default-message').style.display = 'block';
+      document.getElementById('image-grid').style.display = 'none';
+      document.getElementById('drop-zone').style.display = 'none';
+      document.getElementById('save-button').style.display = 'none';
+    }
+    function hideDefaultMessage() {
+      document.getElementById('default-message').style.display = 'none';
+      document.getElementById('image-grid').style.display = 'grid';
+      document.getElementById('drop-zone').style.display = 'block';
+      document.getElementById('save-button').style.display = 'block';
+    }
+
+    // Toast and loading
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.style.display = 'block';
+      setTimeout(() => toast.style.display = 'none', 3000);
+    }
+    function showLoading() {
+      document.getElementById('loading').style.display = 'block';
+    }
+    function hideLoading() {
+      document.getElementById('loading').style.display = 'none';
+    }
+  </script>
+</body>
+</html>

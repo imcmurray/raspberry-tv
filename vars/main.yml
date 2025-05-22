@@ -1,0 +1,6 @@
+couchdb_url: http://couchdb.utb.circ10.dcn:5984
+tv_uuid: 550e8400-e29b-41d4-a716-446655440001
+manager_url: http://couchdb.utb.circ10.dcn:8000
+office_start_time: "08:00"
+office_end_time: "17:30"
+time_zone: America/Denver

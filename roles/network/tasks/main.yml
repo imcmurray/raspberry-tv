@@ -1,0 +1,1 @@
+# This role is empty assuming DHCP is used. For a static IP, add tasks to configure /etc/dhcpcd.conf.

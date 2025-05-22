@@ -1,0 +1,44 @@
+- name: Deploy configuration file
+  template:
+    src: slideshow.conf.j2
+    dest: /etc/slideshow.conf
+    mode: 0644
+
+- name: Deploy slideshow script
+  copy:
+    src: slideshow.py
+    dest: /usr/local/bin/slideshow.py
+    mode: 0755
+
+- name: Deploy HDMI sleep script
+  copy:
+    src: hdmi_sleep.py
+    dest: /usr/local/bin/hdmi_sleep.py
+    mode: 0755
+
+- name: Deploy slideshow service
+  template:
+    src: slideshow.service.j2
+    dest: /etc/systemd/system/slideshow.service
+    mode: 0644
+
+- name: Deploy HDMI sleep service
+  template:
+    src: hdmi_sleep.service.j2
+    dest: /etc/systemd/system/hdmi_sleep.service
+    mode: 0644
+
+- name: Create logs database in CouchDB
+  uri:
+    url: '{{ couchdb_url }}/logs'
+    method: PUT
+    status_code: 201,412
+
+- name: Enable and start services
+  systemd:
+    name: '{{ item }}'
+    enabled: yes
+    state: started
+  loop:
+    - slideshow
+    - hdmi_sleep

@@ -1,0 +1,15 @@
+- name: Set HDMI group and mode
+  lineinfile:
+    path: /boot/config.txt
+    line: '{{ item }}'
+  loop:
+    - 'hdmi_group=1'
+    - 'hdmi_mode=16'
+  notify: reboot
+
+- name: Add consoleblank=0 to cmdline.txt
+  shell: |
+    if ! grep -q "consoleblank=0" /boot/cmdline.txt; then
+      sed -i 's/$/ consoleblank=0/' /boot/cmdline.txt
+    fi
+  notify: reboot
