@@ -76,8 +76,8 @@ def fetch_document():
         logger.error(f"Error fetching document: {e}")
         return None
 
-# Function to fetch an image from CouchDB attachments
-def fetch_image(image_name):
+# Function to fetch and process an image from CouchDB attachments
+def fetch_image(image_name, text_params=None):
     try:
         url = f"{couchdb_url}/slideshows/{tv_uuid}/{image_name}"
         headers = {'Cache-Control': 'no-store'}
@@ -85,7 +85,69 @@ def fetch_image(image_name):
         if response.status_code == 200:
             image_data = BytesIO(response.content)
             image = pygame.image.load(image_data)
-            return pygame.transform.scale(image, (screen_width, screen_height))
+            
+            img_width, img_height = image.get_size()
+            
+            width_ratio = screen_width / img_width
+            height_ratio = screen_height / img_height
+            scale_ratio = min(width_ratio, height_ratio)
+            
+            new_width = int(img_width * scale_ratio)
+            new_height = int(img_height * scale_ratio)
+            
+            scaled_image = pygame.transform.smoothscale(image, (new_width, new_height))
+
+            if text_params and text_params.get('text'):
+                try:
+                    text_content = text_params['text']
+                    if '{datetime}' in text_content: # Handle datetime placeholder
+                        text_content = text_content.replace('{datetime}', datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+                    font_size_map = {"small": 24, "medium": 36, "large": 48}
+                    actual_font_size = font_size_map.get(text_params.get('text_size', 'medium'), 36)
+                    
+                    try:
+                        font = pygame.font.Font("freesansbold.ttf", actual_font_size)
+                    except IOError:
+                        font = pygame.font.Font(None, actual_font_size)
+                    
+                    text_color_hex = text_params.get('text_color', '#FFFFFF')
+                    text_color_rgb = pygame.Color(text_color_hex)
+                    
+                    text_surface = font.render(text_content, True, text_color_rgb)
+                    
+                    text_pos_key = text_params.get('text_position', 'bottom-center')
+                    text_rect = text_surface.get_rect()
+
+                    # Calculate (x,y) for text_surface on scaled_image (new_width, new_height)
+                    padding = 10 # General padding from edges
+
+                    if text_pos_key == 'top-left':
+                        text_rect.topleft = (padding, padding)
+                    elif text_pos_key == 'top-center':
+                        text_rect.midtop = (new_width // 2, padding)
+                    elif text_pos_key == 'top-right':
+                        text_rect.topright = (new_width - padding, padding)
+                    elif text_pos_key == 'center-left':
+                        text_rect.midleft = (padding, new_height // 2)
+                    elif text_pos_key == 'center':
+                        text_rect.center = (new_width // 2, new_height // 2)
+                    elif text_pos_key == 'center-right':
+                        text_rect.midright = (new_width - padding, new_height // 2)
+                    elif text_pos_key == 'bottom-left':
+                        text_rect.bottomleft = (padding, new_height - padding)
+                    elif text_pos_key == 'bottom-center':
+                        text_rect.midbottom = (new_width // 2, new_height - padding)
+                    elif text_pos_key == 'bottom-right':
+                        text_rect.bottomright = (new_width - padding, new_height - padding)
+                    else: # Default to bottom-center
+                        text_rect.midbottom = (new_width // 2, new_height - padding)
+                        
+                    scaled_image.blit(text_surface, text_rect)
+                except Exception as e:
+                    logger.error(f"Error rendering text: {e}")
+
+            return scaled_image
         else:
             raise Exception(f"HTTP error {response.status_code}")
     except requests.RequestException as e:
@@ -129,16 +191,18 @@ while True:
         if doc is not None:
             if doc:
                 slides = []
-                for slide in doc['slides']:
-                    image = fetch_image(slide['name'])
+                for slide_doc in doc['slides']:
+                    text_params = {
+                        'text': slide_doc.get('text'),
+                        'text_color': slide_doc.get('text_color'),
+                        'text_size': slide_doc.get('text_size'),
+                        'text_position': slide_doc.get('text_position')
+                    }
+                    image = fetch_image(slide_doc['name'], text_params)
                     if image:
                         slides.append({
-                            'image': image,
-                            'text': slide['text'],
-                            'text_size': slide['text_size'],
-                            'text_color': slide['text_color'],
-                            'text_position': slide['text_position'],
-                            'duration': slide['duration']
+                            'image': image, # Image now has text rendered on it
+                            'duration': slide_doc['duration']
                         })
                 if slides:
                     state = "slideshow"
@@ -161,84 +225,61 @@ while True:
             doc = fetch_document()
             if doc:
                 slides = []
-                for slide in doc['slides']:
-                    image = fetch_image(slide['name'])
+                for slide_doc in doc['slides']: # Renamed to slide_doc to avoid confusion
+                    text_params = {
+                        'text': slide_doc.get('text'),
+                        'text_color': slide_doc.get('text_color'),
+                        'text_size': slide_doc.get('text_size'),
+                        'text_position': slide_doc.get('text_position')
+                    }
+                    image = fetch_image(slide_doc['name'], text_params)
                     if image:
                         slides.append({
-                            'image': image,
-                            'text': slide['text'],
-                            'text_size': slide['text_size'],
-                            'text_color': slide['text_color'],
-                            'text_position': slide['text_position'],
-                            'duration': slide['duration']
+                            'image': image, # Image now has text rendered on it
+                            'duration': slide_doc['duration']
                         })
                 if slides:
                     state = "slideshow"
             time.sleep(1)
     elif state == "slideshow":
-        for slide in slides:
+        for slide_data in slides: # Renamed to slide_data
             start_time = time.time()
-            while time.time() - start_time < slide['duration']:
+            while time.time() - start_time < slide_data['duration']:
                 if need_refetch.is_set():
                     need_refetch.clear()
                     doc = fetch_document()
                     if doc:
-                        slides = []
-                        for s in doc['slides']:
-                            image = fetch_image(s['name'])
+                        new_slides_temp = [] # Build new list of slides
+                        for s_doc in doc['slides']: # Renamed to s_doc
+                            text_params = {
+                                'text': s_doc.get('text'),
+                                'text_color': s_doc.get('text_color'),
+                                'text_size': s_doc.get('text_size'),
+                                'text_position': s_doc.get('text_position')
+                            }
+                            image = fetch_image(s_doc['name'], text_params)
                             if image:
-                                slides.append({
+                                new_slides_temp.append({
                                     'image': image,
-                                    'text': s['text'],
-                                    'text_size': s['text_size'],
-                                    'text_color': s['text_color'],
-                                    'text_position': s['text_position'],
-                                    'duration': s['duration']
+                                    'duration': s_doc['duration']
                                 })
+                        slides = new_slides_temp # Assign new list to slides
                         if not slides:
                             state = "default"
-                            break
-                    else:
+                            break 
+                    else: # doc is None
                         state = "default"
-                        break
-                    break
-                screen.blit(slide['image'], (0, 0))
-                text = slide['text']
-                if '{datetime}' in text:
-                    text = text.replace('{datetime}', datetime.now().strftime("%Y-%m-%d %H:%M"))
-                size_map = {'small': 16, 'medium': 24, 'large': 32}
-                font_size = size_map.get(slide['text_size'], 24)
-                font = pygame.font.SysFont(None, font_size)
-                color = tuple(int(slide['text_color'][i:i+2], 16) for i in (1, 3, 5))
-                text_surface = font.render(text, True, color)
-                text_rect = text_surface.get_rect()
-                positions = {
-                    'top-left': (0, 0),
-                    'top-center': (screen_width / 2, 0),
-                    'top-right': (screen_width, 0),
-                    'center-left': (0, screen_height / 2),
-                    'center': (screen_width / 2, screen_height / 2),
-                    'center-right': (screen_width, screen_height / 2),
-                    'bottom-left': (0, screen_height),
-                    'bottom-center': (screen_width / 2, screen_height),
-                    'bottom-right': (screen_width, screen_height)
-                }
-                pos_key = slide['text_position']
-                if pos_key in positions:
-                    if pos_key in ['top-left', 'bottom-left']:
-                        text_rect.topleft = positions[pos_key]
-                    elif pos_key in ['top-right', 'bottom-right']:
-                        text_rect.topright = positions[pos_key]
-                    elif pos_key in ['center-left', 'center-right']:
-                        text_rect.center = positions[pos_key]
-                    elif pos_key == 'center':
-                        text_rect.center = positions[pos_key]
-                    elif pos_key in ['top-center', 'bottom-center']:
-                        text_rect.midtop = positions[pos_key] if pos_key == 'top-center' else (positions[pos_key][0], screen_height)
-                else:
-                    text_rect.center = (screen_width / 2, screen_height / 2)
-                screen.blit(text_surface, text_rect)
+                        break 
+                    # If slides were reloaded, we need to break from inner while and outer for to restart slideshow with new slides
+                    if state == "default" or need_refetch.is_set(): # need_refetch check is belt-and-suspenders
+                        break # Break from inner while loop
+                
+                if state == "default": # Check again if state changed due to refetch
+                    break # Break from inner while loop
+
+                screen.blit(slide_data['image'], (0, 0))
                 pygame.display.flip()
-                time.sleep(1)
-            if state != "slideshow":
+                time.sleep(1) # Check for events or refetch more frequently if needed
+            
+            if state == "default" or need_refetch.is_set(): # If state changed, break from for loop
                 break

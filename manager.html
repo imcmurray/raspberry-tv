@@ -74,24 +74,44 @@
 
     // Fetch TVs and monitor changes
     async function loadTvs() {
-      const response = await fetch(`${dbUrl}/_all_docs`);
-      const data = await response.json();
+      let data;
+      try {
+        const response = await fetch(`${dbUrl}/_all_docs?include_docs=true`);
+        if (!response.ok) {
+          console.error('Error fetching TV list:', response.status, response.statusText);
+          showToast(`Error fetching TV list: ${response.statusText || 'Unknown error'}`);
+          showDefaultMessage(); // Ensure UI reflects that no TVs could be loaded
+          return;
+        }
+        data = await response.json();
+      } catch (error) {
+        console.error('Network or fetch error fetching TV list:', error);
+        showToast('Network error fetching TV list. Please check connection.');
+        showDefaultMessage(); // Ensure UI reflects that no TVs could be loaded
+        return;
+      }
+
       const select = document.getElementById('tv-select');
       select.innerHTML = '<option value="">Select a TV</option>';
-      if (data.rows.length === 0) {
+
+      if (!data || !data.rows || data.rows.length === 0) {
         showDefaultMessage();
       } else {
-        const tvPromises = data.rows.map(async row => {
-          const doc = await (await fetch(`${dbUrl}/${row.id}`)).json();
-          const option = document.createElement('option');
-          option.value = row.id;
-          option.textContent = doc.name || row.id;
-          option.dataset.status = doc.current_slide ? 'Online' : 'Offline';
-          select.appendChild(option);
+        data.rows.forEach(row => {
+          if (row.doc) { // Check if doc exists
+            const doc = row.doc;
+            // Assuming all documents in this DB are TV documents or have a 'name' property
+            // and potentially 'current_slide' for status.
+            // If not, additional filtering like `if(doc.type === 'tv_document')` might be needed.
+            const option = document.createElement('option');
+            option.value = doc._id; // Use _id for the value, as it's the document ID
+            option.textContent = doc.name || doc._id; // Display name, fallback to ID
+            option.dataset.status = doc.current_slide ? 'Online' : 'Offline';
+            select.appendChild(option);
+          }
         });
-        await Promise.all(tvPromises);
         hideDefaultMessage();
-        listenForChanges();
+        listenForChanges(); // Start listening for changes only after successful initial load
       }
     }
     loadTvs();
@@ -343,15 +363,109 @@
     // Image preview modal
     async function showModal(src, slide) {
       const modal = document.getElementById('modal');
+      const modalContent = document.getElementById('modal-content');
       const modalImg = document.getElementById('modal-image');
       const modalMeta = document.getElementById('modal-meta');
+      
       modalImg.src = src;
       const attachment = (await (await fetch(`${dbUrl}/${currentTvId}`)).json())._attachments[slide.name];
       modalMeta.textContent = `Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, Type: ${attachment.content_type}, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s`;
+
+      // Ensure modal-content is positioned relatively for absolute positioning of overlay
+      modalContent.style.position = 'relative';
+
+      let overlay = document.getElementById('imageTextOverlayInModal');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'imageTextOverlayInModal';
+        overlay.style.position = 'absolute';
+        overlay.style.padding = '5px';
+        overlay.style.backgroundColor = 'rgba(0,0,0,0.3)';
+        overlay.style.borderRadius = '3px';
+        modalContent.appendChild(overlay); // Append to modal-content so it's part of the modal
+      }
+
+      overlay.textContent = slide.text || '';
+      overlay.style.color = slide.text_color || '#ffffff';
+
+      let fontSize;
+      switch (slide.text_size) {
+        case 'small': fontSize = '16px'; break;
+        case 'medium': fontSize = '24px'; break;
+        case 'large': fontSize = '32px'; break;
+        default: fontSize = '24px';
+      }
+      overlay.style.fontSize = fontSize;
+
+      // Reset positioning properties
+      overlay.style.top = '';
+      overlay.style.left = '';
+      overlay.style.right = '';
+      overlay.style.bottom = '';
+      overlay.style.transform = '';
+      overlay.style.textAlign = 'left'; // Default text-align
+
+      const position = slide.text_position || 'bottom-center';
+      switch (position) {
+        case 'top-left':
+          overlay.style.top = '10px';
+          overlay.style.left = '10px';
+          break;
+        case 'top-center':
+          overlay.style.top = '10px';
+          overlay.style.left = '50%';
+          overlay.style.transform = 'translateX(-50%)';
+          overlay.style.textAlign = 'center';
+          break;
+        case 'top-right':
+          overlay.style.top = '10px';
+          overlay.style.right = '10px';
+          break;
+        case 'center-left':
+          overlay.style.top = '50%';
+          overlay.style.left = '10px';
+          overlay.style.transform = 'translateY(-50%)';
+          break;
+        case 'center':
+          overlay.style.top = '50%';
+          overlay.style.left = '50%';
+          overlay.style.transform = 'translate(-50%, -50%)';
+          overlay.style.textAlign = 'center';
+          break;
+        case 'center-right':
+          overlay.style.top = '50%';
+          overlay.style.right = '10px';
+          overlay.style.transform = 'translateY(-50%)';
+          break;
+        case 'bottom-left':
+          overlay.style.bottom = '10px';
+          overlay.style.left = '10px';
+          break;
+        case 'bottom-center':
+          overlay.style.bottom = '10px';
+          overlay.style.left = '50%';
+          overlay.style.transform = 'translateX(-50%)';
+          overlay.style.textAlign = 'center';
+          break;
+        case 'bottom-right':
+          overlay.style.bottom = '10px';
+          overlay.style.right = '10px';
+          break;
+        default: // Also bottom-center
+          overlay.style.bottom = '10px';
+          overlay.style.left = '50%';
+          overlay.style.transform = 'translateX(-50%)';
+          overlay.style.textAlign = 'center';
+          break;
+      }
+      
       modal.style.display = 'flex';
     }
     function closeModal() {
       document.getElementById('modal').style.display = 'none';
+      // Optionally, hide or clear the overlay content if it persists visually
+      // let overlay = document.getElementById('imageTextOverlayInModal');
+      // if (overlay) overlay.textContent = ''; 
     }
 
     // Drag-and-drop and file input
@@ -375,122 +489,179 @@
       }
       showLoading();
       for (let file of files) {
-        const uniqueName = Date.now() + '_' + file.name;
-        const uploadUrl = `${dbUrl}/${currentTvId}/${uniqueName}?rev=${currentRev}`;
-        try {
-          const response = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': file.type },
-            body: file,
-          });
-          if (!response.ok) throw new Error('Upload failed');
-          const data = await response.json();
-          currentRev = data.rev;
-          const slide = { name: uniqueName, text: '', text_size: 'medium', text_color: '#ffffff', text_position: 'bottom-center', duration: 10 };
-          localSlides.push(slide);
-          hasUnsavedChanges = true; // Set unsaved changes flag
-          const item = document.createElement('div');
-          item.className = 'image-item';
-          const img = document.createElement('img');
-          img.src = `${dbUrl}/${currentTvId}/${uniqueName}`;
-          img.addEventListener('click', () => showModal(img.src, slide));
-          const deleteBtn = document.createElement('button');
-          deleteBtn.textContent = 'Delete';
-          deleteBtn.className = 'delete-button';
-          deleteBtn.addEventListener('click', e => {
-            e.stopPropagation();
-            localSlides = localSlides.filter(s => s && s.name !== uniqueName);
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-            item.remove();
-          });
-          const details = document.createElement('div');
-          details.className = 'image-details';
-          const textInput = document.createElement('input');
-          textInput.type = 'text';
-          textInput.placeholder = 'Text or {datetime}';
-          textInput.addEventListener('input', () => {
-            slide.text = textInput.value;
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-          });
-          const sizeSelect = document.createElement('select');
-          ['small', 'medium', 'large'].forEach(size => {
-            const option = document.createElement('option');
-            option.value = size;
-            option.textContent = size.charAt(0).toUpperCase() + size.slice(1);
-            if (size === 'medium') option.selected = true;
-            sizeSelect.appendChild(option);
-          });
-          sizeSelect.addEventListener('change', () => {
-            slide.text_size = sizeSelect.value;
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-          });
-          const colorInput = document.createElement('input');
-          colorInput.type = 'color';
-          colorInput.value = '#ffffff';
-          colorInput.addEventListener('input', () => {
-            slide.text_color = colorInput.value;
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-          });
-          const positionSelect = document.createElement('select');
-          ['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'].forEach(pos => {
-            const option = document.createElement('option');
-            option.value = pos;
-            option.textContent = pos.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
-            if (pos === 'bottom-center') option.selected = true;
-            positionSelect.appendChild(option);
-          });
-          positionSelect.addEventListener('change', () => {
-            slide.text_position = positionSelect.value;
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-          });
-          const durationSelect = document.createElement('select');
-          [5, 10, 15, 30, 60].forEach(t => {
-            const option = document.createElement('option');
-            option.value = t;
-            option.textContent = `${t} seconds`;
-            if (t === 10) option.selected = true;
-            durationSelect.appendChild(option);
-          });
-          durationSelect.addEventListener('change', () => {
-            slide.duration = parseInt(durationSelect.value);
-            hasUnsavedChanges = true; // Set unsaved changes flag
-            addToHistory();
-          });
-          details.appendChild(textInput);
-          details.appendChild(sizeSelect);
-          details.appendChild(colorInput);
-          details.appendChild(positionSelect);
-          details.appendChild(durationSelect);
-          item.appendChild(img);
-          item.appendChild(deleteBtn);
-          item.appendChild(details);
-          item.addEventListener('click', e => {
-            if (e.ctrlKey || e.metaKey) {
-              if (selectedSlides.has(uniqueName)) {
-                selectedSlides.delete(uniqueName);
-                item.classList.remove('selected');
+        const originalFileName = file.name; // Keep original filename
+
+        const reader = new FileReader();
+        reader.onload = function(event) {
+          const img = new Image();
+          img.onload = async function() {
+            const maxWidth = 1920;
+            const maxHeight = 1080;
+            let width = img.width;
+            let height = img.height;
+            const ratio = width / height;
+
+            if (width > maxWidth || height > maxHeight) {
+              if ((width / maxWidth) > (height / maxHeight)) {
+                width = maxWidth;
+                height = width / ratio;
               } else {
-                selectedSlides.add(uniqueName);
-                item.classList.add('selected');
+                height = maxHeight;
+                width = height * ratio;
               }
-              document.getElementById('bulk-delete').style.display = selectedSlides.size ? 'inline' : 'none';
             }
-          });
-          document.getElementById('image-grid').appendChild(item);
-          item.slide = slide;
-          addToHistory();
-        } catch (error) {
-          console.error('Error uploading file:', error);
-          showToast('Failed to upload image: ' + file.name);
-        }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            canvas.toBlob(async function(blob) {
+              const uniqueName = Date.now() + '_' + originalFileName;
+              const uploadUrl = `${dbUrl}/${currentTvId}/${uniqueName}?rev=${currentRev}`;
+              try {
+                const response = await fetch(uploadUrl, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'image/jpeg' }, // Use image/jpeg for the blob
+                  body: blob, // Upload the resized blob
+                });
+                if (!response.ok) throw new Error('Upload failed');
+                const data = await response.json();
+                currentRev = data.rev;
+                const slide = { name: uniqueName, text: '', text_size: 'medium', text_color: '#ffffff', text_position: 'bottom-center', duration: 10 };
+                localSlides.push(slide);
+                hasUnsavedChanges = true; // Set unsaved changes flag
+                const item = document.createElement('div');
+                item.className = 'image-item';
+                const displayImg = document.createElement('img');
+                displayImg.src = `${dbUrl}/${currentTvId}/${uniqueName}`; // URL to the newly uploaded image
+                displayImg.addEventListener('click', () => showModal(displayImg.src, slide));
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.className = 'delete-button';
+                deleteBtn.addEventListener('click', e => {
+                  e.stopPropagation();
+                  localSlides = localSlides.filter(s => s && s.name !== uniqueName);
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                  item.remove();
+                });
+                const details = document.createElement('div');
+                details.className = 'image-details';
+                const textInput = document.createElement('input');
+                textInput.type = 'text';
+                textInput.placeholder = 'Text or {datetime}';
+                textInput.addEventListener('input', () => {
+                  slide.text = textInput.value;
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                });
+                const sizeSelect = document.createElement('select');
+                ['small', 'medium', 'large'].forEach(size => {
+                  const option = document.createElement('option');
+                  option.value = size;
+                  option.textContent = size.charAt(0).toUpperCase() + size.slice(1);
+                  if (size === 'medium') option.selected = true;
+                  sizeSelect.appendChild(option);
+                });
+                sizeSelect.addEventListener('change', () => {
+                  slide.text_size = sizeSelect.value;
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                });
+                const colorInput = document.createElement('input');
+                colorInput.type = 'color';
+                colorInput.value = '#ffffff';
+                colorInput.addEventListener('input', () => {
+                  slide.text_color = colorInput.value;
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                });
+                const positionSelect = document.createElement('select');
+                ['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'].forEach(pos => {
+                  const option = document.createElement('option');
+                  option.value = pos;
+                  option.textContent = pos.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+                  if (pos === 'bottom-center') option.selected = true;
+                  positionSelect.appendChild(option);
+                });
+                positionSelect.addEventListener('change', () => {
+                  slide.text_position = positionSelect.value;
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                });
+                const durationSelect = document.createElement('select');
+                [5, 10, 15, 30, 60].forEach(t => {
+                  const option = document.createElement('option');
+                  option.value = t;
+                  option.textContent = `${t} seconds`;
+                  if (t === 10) option.selected = true;
+                  durationSelect.appendChild(option);
+                });
+                durationSelect.addEventListener('change', () => {
+                  slide.duration = parseInt(durationSelect.value);
+                  hasUnsavedChanges = true; // Set unsaved changes flag
+                  addToHistory();
+                });
+                details.appendChild(textInput);
+                details.appendChild(sizeSelect);
+                details.appendChild(colorInput);
+                details.appendChild(positionSelect);
+                details.appendChild(durationSelect);
+                item.appendChild(displayImg);
+                item.appendChild(deleteBtn);
+                item.appendChild(details);
+                item.addEventListener('click', e => {
+                  if (e.ctrlKey || e.metaKey) {
+                    if (selectedSlides.has(uniqueName)) {
+                      selectedSlides.delete(uniqueName);
+                      item.classList.remove('selected');
+                    } else {
+                      selectedSlides.add(uniqueName);
+                      item.classList.add('selected');
+                    }
+                    document.getElementById('bulk-delete').style.display = selectedSlides.size ? 'inline' : 'none';
+                  }
+                });
+                document.getElementById('image-grid').appendChild(item);
+                item.slide = slide;
+                addToHistory();
+              } catch (error) {
+                console.error('Error uploading file:', error);
+                showToast('Failed to upload image: ' + originalFileName);
+              } finally {
+                // Check if this is the last file to process
+                if (files[files.length - 1].name === originalFileName && files[files.length -1].lastModified === file.lastModified) {
+                  hideLoading();
+                  fileInput.value = ''; // Clear file input after all files processed
+                }
+              }
+            }, 'image/jpeg', 0.90);
+          }
+          img.onerror = function() {
+            console.error("Error loading image for resizing:", originalFileName);
+            showToast("Error loading image for resizing: " + originalFileName);
+            // Check if this is the last file to process to hide loading
+            if (files[files.length - 1].name === originalFileName && files[files.length -1].lastModified === file.lastModified) {
+                hideLoading();
+                fileInput.value = '';
+            }
+          };
+          img.src = event.target.result;
+        };
+        reader.onerror = function() {
+            console.error("FileReader error for file:", originalFileName);
+            showToast("Error reading file: " + originalFileName);
+            // Check if this is the last file to process to hide loading
+            if (files[files.length - 1].name === originalFileName && files[files.length -1].lastModified === file.lastModified) {
+                hideLoading();
+                fileInput.value = '';
+            }
+        };
+        reader.readAsDataURL(file);
       }
-      fileInput.value = '';
-      hideLoading();
+      // Moved hideLoading and fileInput.value clearing to be conditional within blob callback
     }
 
     // Bulk delete
