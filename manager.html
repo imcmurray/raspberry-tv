@@ -358,14 +358,57 @@
         });
         durationSelect.addEventListener('change', () => {
           slide.duration = parseInt(durationSelect.value);
-          hasUnsavedChanges = true; // Set unsaved changes flag
-          addToHistory();
+          hasUnsavedChanges = true; addToHistory();
         });
+
+        // Transition Time
+        const transitionTimeLabel = document.createElement('label');
+        transitionTimeLabel.textContent = 'Transition (ms):';
+        const transitionTimeInput = document.createElement('input');
+        transitionTimeInput.type = 'number';
+        transitionTimeInput.min = '0';
+        transitionTimeInput.value = slide.transition_time || 0;
+        transitionTimeInput.className = 'transition-time-input';
+        transitionTimeInput.addEventListener('input', () => {
+          slide.transition_time = parseInt(transitionTimeInput.value) || 0;
+          hasUnsavedChanges = true; addToHistory();
+        });
+
+        // Scroll Text
+        const scrollTextLabel = document.createElement('label');
+        scrollTextLabel.textContent = 'Scroll Text:';
+        const scrollTextCheckbox = document.createElement('input');
+        scrollTextCheckbox.type = 'checkbox';
+        scrollTextCheckbox.checked = slide.scroll_text || false;
+        scrollTextCheckbox.className = 'scroll-text-checkbox';
+        scrollTextCheckbox.addEventListener('change', () => {
+          slide.scroll_text = scrollTextCheckbox.checked;
+          hasUnsavedChanges = true; addToHistory();
+        });
+        
+        // Text Background Color
+        const textBgColorLabel = document.createElement('label');
+        textBgColorLabel.textContent = 'Text BG Color:';
+        const textBgColorInput = document.createElement('input');
+        textBgColorInput.type = 'color';
+        textBgColorInput.value = slide.text_background_color || '#000000';
+        textBgColorInput.className = 'text-bg-color-input';
+        textBgColorInput.addEventListener('input', () => {
+          slide.text_background_color = textBgColorInput.value;
+          hasUnsavedChanges = true; addToHistory();
+        });
+
         details.appendChild(textInput);
         details.appendChild(sizeSelect);
         details.appendChild(colorInput);
         details.appendChild(positionSelect);
         details.appendChild(durationSelect);
+        details.appendChild(transitionTimeLabel);
+        details.appendChild(transitionTimeInput);
+        details.appendChild(scrollTextLabel);
+        details.appendChild(scrollTextCheckbox);
+        details.appendChild(textBgColorLabel);
+        details.appendChild(textBgColorInput);
         item.appendChild(img);
         item.appendChild(deleteBtn);
         item.appendChild(details);
@@ -410,7 +453,7 @@
       
       modalImg.src = src;
       const attachment = (await (await fetch(`${dbUrl}/${currentTvId}`)).json())._attachments[slide.name];
-      modalMeta.textContent = `Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, Type: ${attachment.content_type}, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s`;
+      modalMeta.textContent = `Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, Type: ${attachment.content_type}, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s, Transition: ${slide.transition_time || 0}ms, Scroll: ${slide.scroll_text ? 'Yes' : 'No'}, Text BG: ${slide.text_background_color || '#000000'}`;
 
       // Ensure modal-content is positioned relatively for absolute positioning of overlay
       modalContent.style.position = 'relative';
@@ -570,7 +613,17 @@
                 if (!response.ok) throw new Error('Upload failed');
                 const data = await response.json();
                 currentRev = data.rev;
-                const slide = { name: uniqueName, text: '', text_size: 'medium', text_color: '#ffffff', text_position: 'bottom-center', duration: 10 };
+                const slide = { 
+                  name: uniqueName, 
+                  text: '', 
+                  text_size: 'medium', 
+                  text_color: '#ffffff', 
+                  text_position: 'bottom-center', 
+                  duration: 10,
+                  transition_time: 0,
+                  scroll_text: false,
+                  text_background_color: '#000000'
+                };
                 localSlides.push(slide);
                 hasUnsavedChanges = true; // Set unsaved changes flag
                 const item = document.createElement('div');
@@ -637,19 +690,62 @@
                   const option = document.createElement('option');
                   option.value = t;
                   option.textContent = `${t} seconds`;
-                  if (t === 10) option.selected = true;
+                  if (t === (slide.duration || 10)) option.selected = true; // Use slide property
                   durationSelect.appendChild(option);
                 });
                 durationSelect.addEventListener('change', () => {
                   slide.duration = parseInt(durationSelect.value);
-                  hasUnsavedChanges = true; // Set unsaved changes flag
-                  addToHistory();
+                  hasUnsavedChanges = true; addToHistory();
                 });
+
+                // Transition Time for new slide
+                const transitionTimeLabel = document.createElement('label');
+                transitionTimeLabel.textContent = 'Transition (ms):';
+                const transitionTimeInput = document.createElement('input');
+                transitionTimeInput.type = 'number';
+                transitionTimeInput.min = '0';
+                transitionTimeInput.value = slide.transition_time || 0;
+                transitionTimeInput.className = 'transition-time-input';
+                transitionTimeInput.addEventListener('input', () => {
+                  slide.transition_time = parseInt(transitionTimeInput.value) || 0;
+                  hasUnsavedChanges = true; addToHistory();
+                });
+
+                // Scroll Text for new slide
+                const scrollTextLabel = document.createElement('label');
+                scrollTextLabel.textContent = 'Scroll Text:';
+                const scrollTextCheckbox = document.createElement('input');
+                scrollTextCheckbox.type = 'checkbox';
+                scrollTextCheckbox.checked = slide.scroll_text || false;
+                scrollTextCheckbox.className = 'scroll-text-checkbox';
+                scrollTextCheckbox.addEventListener('change', () => {
+                  slide.scroll_text = scrollTextCheckbox.checked;
+                  hasUnsavedChanges = true; addToHistory();
+                });
+
+                // Text Background Color for new slide
+                const textBgColorLabel = document.createElement('label');
+                textBgColorLabel.textContent = 'Text BG Color:';
+                const textBgColorInput = document.createElement('input');
+                textBgColorInput.type = 'color';
+                textBgColorInput.value = slide.text_background_color || '#000000';
+                textBgColorInput.className = 'text-bg-color-input';
+                textBgColorInput.addEventListener('input', () => {
+                  slide.text_background_color = textBgColorInput.value;
+                  hasUnsavedChanges = true; addToHistory();
+                });
+
                 details.appendChild(textInput);
                 details.appendChild(sizeSelect);
                 details.appendChild(colorInput);
                 details.appendChild(positionSelect);
                 details.appendChild(durationSelect);
+                details.appendChild(transitionTimeLabel);
+                details.appendChild(transitionTimeInput);
+                details.appendChild(scrollTextLabel);
+                details.appendChild(scrollTextCheckbox);
+                details.appendChild(textBgColorLabel);
+                details.appendChild(textBgColorInput);
                 item.appendChild(displayImg);
                 item.appendChild(deleteBtn);
                 item.appendChild(details);

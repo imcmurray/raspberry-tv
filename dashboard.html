@@ -57,6 +57,13 @@
         a#backToManager:hover {
             background-color: #004494; /* Darker shade on hover */
         }
+        .tv-card img.thumbnail {
+            width: 100px; /* or max-width: 100%; */
+            height: auto;
+            border: 1px solid #444; /* Darker border for dark theme */
+            margin-top: 10px;
+            display: block; /* To allow margin-top to work as expected and center if needed */
+        }
     </style>
 </head>
 <body>
@@ -132,21 +139,93 @@
                 const status = await fetchTvStatus(tv._id);
                 const tvCard = document.createElement('div');
                 tvCard.className = 'tv-card';
+                tvCard.id = 'tv-card-' + tv._id; // Assign unique ID to the card
+
+                let thumbnailHtml = '';
+                if (status.current_slide_filename && status.current_slide_filename !== 'N/A (no status)' && status.current_slide_filename !== 'N/A (status error)' && status.current_slide_filename !== 'N/A (fetch error)') {
+                    const thumbnailUrl = `${dbUrl}/${tv._id}/${status.current_slide_filename}`;
+                    thumbnailHtml = `<img src="${thumbnailUrl}" alt="Current slide" class="thumbnail">`;
+                }
+
                 tvCard.innerHTML = `
                     <h3>${tv.name || tv._id}</h3>
-                    <p><span class="status-label">Current Slide:</span> ${status.current_slide_filename || 'Unknown'}</p>
-                    <p class="timestamp"><span class="status-label">Last Update:</span> ${formatTimestamp(status.timestamp)}</p>
+                    <p><span class="status-label">Current Slide:</span> <span class="current-slide-text">${status.current_slide_filename || 'Unknown'}</span></p>
+                    <p class="timestamp"><span class="status-label">Last Update:</span> <span class="timestamp-text">${formatTimestamp(status.timestamp)}</span></p>
                     <p><span class="status-label">TV ID:</span> ${tv._id}</p>
+                    ${thumbnailHtml}
                 `;
                 dashboardContainer.appendChild(tvCard);
+            }
+        }
+
+        async function listenForStatusChanges(since = 'now') {
+            try {
+                const response = await fetch(`${dbUrl}/_changes?feed=longpoll&include_docs=true&since=${since}&heartbeat=10000`);
+                if (!response.ok) {
+                    console.error('Error connecting to _changes feed:', response.status, response.statusText);
+                    // Optional: Implement a backoff strategy before retrying
+                    setTimeout(() => listenForStatusChanges(since), 5000); // Retry after 5 seconds
+                    return;
+                }
+                const changes = await response.json();
+                
+                changes.results.forEach(change => {
+                    if (change.id && change.id.startsWith('status_') && change.doc) {
+                        const tvId = change.doc.tv_uuid;
+                        const cardToUpdate = document.getElementById('tv-card-' + tvId);
+
+                        if (cardToUpdate) {
+                            const slideTextElement = cardToUpdate.querySelector('.current-slide-text');
+                            if (slideTextElement) {
+                                slideTextElement.textContent = change.doc.current_slide_filename || 'Unknown';
+                            }
+
+                            const timestampElement = cardToUpdate.querySelector('.timestamp-text');
+                            if (timestampElement) {
+                                timestampElement.textContent = formatTimestamp(change.doc.timestamp);
+                            }
+
+                            // Update thumbnail
+                            let existingThumbnail = cardToUpdate.querySelector('img.thumbnail');
+                            if (existingThumbnail) {
+                                existingThumbnail.remove();
+                            }
+
+                            if (change.doc.current_slide_filename && change.doc.current_slide_filename !== 'N/A (no status)' && change.doc.current_slide_filename !== 'N/A (status error)' && change.doc.current_slide_filename !== 'N/A (fetch error)') {
+                                const newThumbnailUrl = `${dbUrl}/${tvId}/${change.doc.current_slide_filename}`;
+                                const newImg = document.createElement('img');
+                                newImg.src = newThumbnailUrl;
+                                newImg.alt = "Current slide";
+                                newImg.className = 'thumbnail';
+                                // Insert after the TV ID paragraph, or at the end of the card
+                                const tvIdParagraph = cardToUpdate.querySelector('p:last-of-type'); 
+                                if (tvIdParagraph && tvIdParagraph.nextSibling) {
+                                    cardToUpdate.insertBefore(newImg, tvIdParagraph.nextSibling);
+                                } else {
+                                     cardToUpdate.appendChild(newImg);
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                listenForStatusChanges(changes.last_seq); // Listen for next batch of changes
+
+            } catch (error) {
+                console.error('Error in _changes feed processing or network error:', error);
+                // Optional: Implement a backoff strategy before retrying
+                setTimeout(() => listenForStatusChanges(since), 10000); // Retry after 10 seconds on error
             }
         }
 
         // Initial load
         renderDashboard();
 
-        // Periodic refresh (e.g., every 15 seconds)
-        setInterval(renderDashboard, 15000);
+        // Start listening for real-time updates
+        listenForStatusChanges();
+
+        // Periodic refresh (e.g., every 15 seconds) - REMOVED
+        // setInterval(renderDashboard, 15000);
     </script>
 </body>
 </html>

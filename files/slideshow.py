@@ -49,54 +49,12 @@ office_end_time_str = config.get('settings', 'office_end_time', fallback=None)
 
 
 # Custom logging handler to send logs to CouchDB
-# Initialize logger early for load_config issues, but CouchDBHandler needs couchdb_url
-# We will re-initialize logging after config is loaded if CouchDBHandler is to be used.
-# For now, basic logging before this point will go to console if logger is touched.
-
-class CouchDBHandler(logging.Handler):
-    def __init__(self, couchdb_url_param, db_name, tv_uuid_param):
-        super().__init__()
-        self.couchdb_url = couchdb_url_param
-        self.db_name = db_name
-        self.tv_uuid = tv_uuid_param
-    def __init__(self, couchdb_url_param, db_name, tv_uuid_param): # Renamed params to avoid clash
-        super().__init__()
-        self.couchdb_url = couchdb_url_param
-        self.db_name = db_name
-        self.tv_uuid = tv_uuid_param
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        doc = {
-            "tv_uuid": self.tv_uuid, # Uses the instance variable
-            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
-            "level": record.levelname,
-            "message": log_entry
-        }
-        try:
-            # Uses the instance variable self.couchdb_url
-            response = requests.post(f"{self.couchdb_url}/{self.db_name}", json=doc)
-            if response.status_code not in (201, 202):
-                # Using logger here might be problematic if this handler itself is failing
-                print(f"Failed to log to CouchDB: {response.status_code}", file=sys.stderr)
-        except requests.RequestException as e:
-            print(f"Error logging to CouchDB: {e}", file=sys.stderr)
-
 # Set up logging
 # Basic file logger first
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler('/var/log/slideshow.log')])
 logger = logging.getLogger() # Get root logger
-
-# Now add CouchDBHandler if configured
-if couchdb_url and tv_uuid: # Ensure essential vars for CouchDBHandler are present
-    couchdb_handler = CouchDBHandler(couchdb_url, "logs", tv_uuid)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s') # Already defined by basicConfig, but explicit for handler
-    couchdb_handler.setFormatter(formatter)
-    logger.addHandler(couchdb_handler)
-else:
-    logger.warning("CouchDB URL or TV UUID not configured. CouchDB logging will be disabled.")
 
 
 # Initialize Pygame
@@ -127,7 +85,7 @@ def fetch_document():
         return None
 
 # Function to fetch and process an image from CouchDB attachments
-def fetch_image(image_name, text_params=None):
+def fetch_image(image_name, text_params=None): # scroll_text_flag removed
     try:
         url = f"{couchdb_url}/slideshows/{tv_uuid}/{image_name}"
         headers = {'Cache-Control': 'no-store'}
@@ -192,17 +150,50 @@ def fetch_image(image_name, text_params=None):
                         text_rect.bottomright = (new_width - padding, new_height - padding)
                     else: # Default to bottom-center
                         text_rect.midbottom = (new_width // 2, new_height - padding)
+                    
+                    text_bg_color_hex = text_params.get('text_background_color')
+                    surface_to_blit_or_return = text_surface # Default to just the text
+                    blit_pos_for_static = text_rect.topleft # Default blit pos for non-backgrounded text
+                    
+                    if text_bg_color_hex and text_bg_color_hex.strip():
+                        try:
+                            text_bg_color_rgb = pygame.Color(text_bg_color_hex)
+                            bg_padding = 5
+                            
+                            surface_with_background = pygame.Surface(
+                                (text_surface.get_width() + 2 * bg_padding, text_surface.get_height() + 2 * bg_padding),
+                                pygame.SRCALPHA
+                            )
+                            surface_with_background.fill(text_bg_color_rgb)
+                            surface_with_background.blit(text_surface, (bg_padding, bg_padding))
+                            surface_to_blit_or_return = surface_with_background
+                            
+                            # Adjusted blit position for the backgrounded surface
+                            blit_pos_for_static = (text_rect.left - bg_padding, text_rect.top - bg_padding)
+                        except ValueError as ve:
+                            logger.error(f"Invalid text_background_color: {text_bg_color_hex} - {ve}")
+                            # Fallback to text_surface without background, blit_pos_for_static remains text_rect.topleft
+                    
+                    # Function now returns the scaled_image and text_surface/text_rect separately.
+                    # No blitting of text onto scaled_image happens here.
+                    return scaled_image, surface_to_blit_or_return, text_rect
                         
-                    scaled_image.blit(text_surface, text_rect)
-                except Exception as e:
+                except Exception as e: # Catches errors in text rendering part
                     logger.error(f"Error rendering text: {e}")
+                    # Fallback: return base image, no text components
+                    return scaled_image, None, None
 
-            return scaled_image
-        else:
-            raise Exception(f"HTTP error {response.status_code}")
-    except requests.RequestException as e:
-        logger.error(f"Error fetching image: {e}")
-        return None
+            # No text defined in text_params (text_params was None or text_params.get('text') was falsey)
+            return scaled_image, None, None # Return base image, no text components
+        else: # HTTP error when fetching image
+            logger.error(f"HTTP error {response.status_code} fetching image {image_name}")
+            return None, None, None # Indicate image fetch failure and no text components
+    except requests.RequestException as e: # Network error when fetching image
+        logger.error(f"Network error fetching image {image_name}: {e}")
+        return None, None, None # Indicate image fetch failure and no text components
+    except Exception as e: # Other unexpected errors (e.g. Pygame image load, font not found)
+        logger.error(f"Unexpected error fetching/processing image {image_name}: {e}")
+        return None, None, None # Indicate image fetch failure and no text components
 
 # Function to update TV status document in CouchDB
 def update_tv_status(couchdb_base_url, tv_doc_uuid, current_slide_info):
@@ -264,6 +255,8 @@ def watch_changes():
 # Start the background thread to watch for changes
 threading.Thread(target=watch_changes, daemon=True).start()
 
+FADE_STEPS = 30 # Number of steps for fade transitions
+
 # Main loop
 while True:
     if state == "connecting":
@@ -275,22 +268,32 @@ while True:
         pygame.display.flip()
         doc = fetch_document()
         if doc is not None:
-            if doc:
+            if doc: # Document exists and was fetched
                 slides = []
-                for slide_doc in doc['slides']:
+                for slide_doc in doc.get('slides', []): # Ensure 'slides' key exists
                     text_params = {
                         'text': slide_doc.get('text'),
                         'text_color': slide_doc.get('text_color'),
                         'text_size': slide_doc.get('text_size'),
-                        'text_position': slide_doc.get('text_position')
+                        'text_position': slide_doc.get('text_position'),
+                        'text_background_color': slide_doc.get('text_background_color', None)
                     }
-                    image = fetch_image(slide_doc['name'], text_params)
-                    if image:
+                    # scroll_text_flag removed from fetch_image call
+                    image_surface, text_surface_for_slide, text_rect_for_slide = fetch_image(
+                        slide_doc['name'],
+                        text_params
+                    )
+                    if image_surface: # Only proceed if image itself was loaded
                         slides.append({
-                            'image': image, # Image now has text rendered on it
-                            'duration': slide_doc['duration'],
-                            'id': slide_doc['name'], # Filename used as ID for slide item
-                            'filename': slide_doc['name']
+                            'image': image_surface, # Pure image
+                            'text_surface': text_surface_for_slide, # Text surface (or None)
+                            'text_rect': text_rect_for_slide,       # Text rect (or None)
+                            'duration': slide_doc.get('duration', 10),
+                            'id': slide_doc['name'],
+                            'filename': slide_doc['name'],
+                            'text_params': text_params, # Keep for reference
+                            'transition_time': slide_doc.get('transition_time', 0),
+                            'scroll_text': slide_doc.get('scroll_text', False) # Keep for main loop logic
                         })
                 if slides:
                     state = "slideshow"
@@ -314,22 +317,32 @@ while True:
         if need_refetch.is_set():
             need_refetch.clear()
             doc = fetch_document()
-            if doc:
+            if doc: # Document exists and was fetched
                 slides = []
-                for slide_doc in doc['slides']: # Renamed to slide_doc to avoid confusion
+                for slide_doc in doc.get('slides', []): # Ensure 'slides' key exists
                     text_params = {
                         'text': slide_doc.get('text'),
                         'text_color': slide_doc.get('text_color'),
                         'text_size': slide_doc.get('text_size'),
-                        'text_position': slide_doc.get('text_position')
+                        'text_position': slide_doc.get('text_position'),
+                        'text_background_color': slide_doc.get('text_background_color', None)
                     }
-                    image = fetch_image(slide_doc['name'], text_params)
-                    if image:
+                    # scroll_text_flag removed from fetch_image call
+                    image_surface, text_surface_for_slide, text_rect_for_slide = fetch_image(
+                        slide_doc['name'],
+                        text_params
+                    )
+                    if image_surface: # Only proceed if image itself was loaded
                         slides.append({
-                            'image': image, # Image now has text rendered on it
-                            'duration': slide_doc['duration'],
-                            'id': slide_doc['name'], # Filename used as ID for slide item
-                            'filename': slide_doc['name']
+                            'image': image_surface, # Pure image
+                            'text_surface': text_surface_for_slide, # Text surface (or None)
+                            'text_rect': text_rect_for_slide,       # Text rect (or None)
+                            'duration': slide_doc.get('duration', 10),
+                            'id': slide_doc['name'],
+                            'filename': slide_doc['name'],
+                            'text_params': text_params, # Keep for reference
+                            'transition_time': slide_doc.get('transition_time', 0),
+                            'scroll_text': slide_doc.get('scroll_text', False) # Keep for main loop logic
                         })
                 if slides:
                     state = "slideshow"
@@ -338,51 +351,163 @@ while True:
                     update_tv_status(couchdb_url, tv_uuid, first_slide_info)
             time.sleep(1)
     elif state == "slideshow":
-        for slide_data in slides: # slide_data now contains 'id' and 'filename'
+        for slide_index, slide_data in enumerate(slides):
             current_display_slide_info = {'id': slide_data['id'], 'filename': slide_data['filename']}
-            update_tv_status(couchdb_url, tv_uuid, current_display_slide_info) # Update status before showing
+            update_tv_status(couchdb_url, tv_uuid, current_display_slide_info)
+
+            # Calculate centered position for the base image
+            img_width, img_height = slide_data['image'].get_size()
+            center_x = (screen_width - img_width) // 2
+            center_y = (screen_height - img_height) // 2
+
+            scroll_x = screen_width # Still screen-wide for scrolling text initiation
+            
+            # Fade-In Logic for the current slide
+            incoming_transition_duration_ms = slide_data.get('transition_time', 0)
+            if incoming_transition_duration_ms > 0:
+                delay_per_step = (incoming_transition_duration_ms / FADE_STEPS) / 1000.0
+                
+                # Prepare the surface to fade in (base image + static text)
+                # This surface is the size of the image itself.
+                slide_render_surface = pygame.Surface((img_width, img_height), pygame.SRCALPHA)
+                slide_render_surface.blit(slide_data['image'], (0,0)) # Blit image at (0,0) on this smaller surface
+                if slide_data.get('text_surface') and not slide_data.get('scroll_text'):
+                    # text_rect is relative to the image, so blit directly onto slide_render_surface
+                    slide_render_surface.blit(slide_data['text_surface'], slide_data['text_rect'])
+
+                for alpha_step in range(FADE_STEPS + 1):
+                    if need_refetch.is_set(): break
+                    
+                    alpha_value = int((alpha_step / FADE_STEPS) * 255)
+                    slide_render_surface.set_alpha(alpha_value)
+                    
+                    screen.fill((0,0,0))
+                    # Blit the prepared surface (image + static text) at the centered position
+                    screen.blit(slide_render_surface, (center_x, center_y))
+                    pygame.display.flip()
+                    time.sleep(delay_per_step)
+                if need_refetch.is_set(): continue # Skip to next iteration of outer loop if refetch occurred
 
             start_time = time.time()
-            while time.time() - start_time < slide_data['duration']:
+            slide_duration = slide_data.get('duration', 10)
+            if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
+                logger.warning(f"Invalid or missing duration for slide {slide_data.get('filename', 'Unknown')}: '{slide_duration}'. Defaulting to 10s.")
+                slide_duration = 10
+
+            # Main display loop for the slide
+            while time.time() - start_time < slide_duration:
                 if need_refetch.is_set():
                     need_refetch.clear()
                     doc = fetch_document()
-                    if doc:
-                        new_slides_temp = [] 
-                        for s_doc in doc['slides']: 
+                    if doc: # Document exists and was fetched
+                        new_slides_temp = []
+                        for s_doc in doc.get('slides', []): # Ensure 'slides' key exists
                             text_params = {
                                 'text': s_doc.get('text'),
                                 'text_color': s_doc.get('text_color'),
                                 'text_size': s_doc.get('text_size'),
-                                'text_position': s_doc.get('text_position')
+                                'text_position': s_doc.get('text_position'),
+                                'text_background_color': s_doc.get('text_background_color', None)
                             }
-                            image = fetch_image(s_doc['name'], text_params)
-                            if image:
+                            # scroll_text_flag removed from fetch_image call
+                            image_surface, text_surface_for_slide, text_rect_for_slide = fetch_image(
+                                s_doc['name'],
+                                text_params
+                            )
+                            if image_surface: # Only proceed if image itself was loaded
                                 new_slides_temp.append({
-                                    'image': image,
-                                    'duration': s_doc['duration'],
-                                    'id': s_doc['name'], 
-                                    'filename': s_doc['name']
+                                    'image': image_surface, # Pure image
+                                    'text_surface': text_surface_for_slide, # Text surface (or None)
+                                    'text_rect': text_rect_for_slide,       # Text rect (or None)
+                                    'duration': s_doc.get('duration', 10),
+                                    'id': s_doc['name'],
+                                    'filename': s_doc['name'],
+                                    'text_params': text_params, # Keep for reference
+                                    'transition_time': s_doc.get('transition_time', 0),
+                                    'scroll_text': s_doc.get('scroll_text', False) # Keep for main loop logic
                                 })
-                        slides = new_slides_temp 
+                        slides = new_slides_temp # Update slides list
                         if not slides:
-                            state = "default"
+                            state = "default" # No slides, go to default state
                         else:
-                            # Report status for the first slide of the new set
+                            # Report status for the first slide of the new set if slideshow continues
                             first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
                             update_tv_status(couchdb_url, tv_uuid, first_slide_info)
-                    else: 
-                        state = "default"
+                            # Important: Reset scroll_x for the new first slide
+                            scroll_x = screen_width 
+                            # Also reset the timer and current slide_data to the new first slide
+                            slide_data = slides[0] # This might be problematic if the outer loop isn't broken correctly
+                                                   # The outer loop should break and restart to handle this properly.
+                                                   # For now, this will make the current iteration use the new slide 0.
+                            start_time = time.time()
+                            slide_duration = slide_data.get('duration', 10)
+                            if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
+                                logger.warning(f"Invalid or missing duration for new slide {slide_data.get('filename', 'Unknown')}: '{slide_duration}'. Defaulting to 10s.")
+                                slide_duration = 10
+
+                    else: # doc fetch failed
+                        state = "default" # Go to default state if doc fetch fails
                     
                     if state == "default": # Break from inner while loop if state changed
                         break 
                 
                 if state == "default": # Check again if state changed due to refetch
-                    break # Break from inner while loop
+                    break # Break from inner while loop (this slide's duration loop)
 
-                screen.blit(slide_data['image'], (0, 0))
+                screen.fill((0, 0, 0)) # Ensure black background
+                # Blit the pure base image at the centered position
+                screen.blit(slide_data['image'], (center_x, center_y))
+
+                # Render text (static or scrolling), adjusting for centered image
+                if slide_data.get('text_surface') and slide_data.get('text_rect'):
+                    text_surface_to_render = slide_data['text_surface']
+                    original_text_rect = slide_data['text_rect'] # This is relative to image (0,0)
+                    
+                    if slide_data.get('scroll_text'):
+                        # Scrolling text: X is scroll_x (screen-wide), Y is relative to centered image top
+                        screen.blit(text_surface_to_render, (scroll_x, center_y + original_text_rect.top))
+                        scroll_x -= 2 # Adjust scroll speed as needed
+                        if scroll_x < -text_surface_to_render.get_width():
+                            scroll_x = screen_width
+                    else: # Static text
+                        # Static text: Position is relative to centered image's top-left
+                        screen.blit(text_surface_to_render, (center_x + original_text_rect.left, center_y + original_text_rect.top))
+                
                 pygame.display.flip()
-                time.sleep(1) 
-            
-            if state == "default": # If state changed, break from for loop
+                # Check for Pygame events (like quit)
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit()
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_ESCAPE: # Allow exiting with ESC
+                           pygame.quit()
+                           sys.exit()
+                
+                time.sleep(0.03) # Shorter sleep for smoother scrolling
+
+            if need_refetch.is_set(): break # Break from main slide loop if refetch needed during duration
+
+            # Fade-Out Logic for the current slide
+            outgoing_transition_duration_ms = slide_data.get('transition_time', 0)
+            if outgoing_transition_duration_ms > 0 and slides and not need_refetch.is_set(): # ensure slides not empty
+                current_screen_snapshot = screen.copy() # Capture the final state of the current slide
+                delay_per_step = (outgoing_transition_duration_ms / FADE_STEPS) / 1000.0
+                
+                for alpha_step in range(FADE_STEPS, -1, -1):
+                    if need_refetch.is_set(): break
+                    
+                    alpha_value = int((alpha_step / FADE_STEPS) * 255)
+                    current_screen_snapshot.set_alpha(alpha_value)
+                    
+                    screen.fill((0,0,0)) # Fill with black before blitting semi-transparent surface
+                    screen.blit(current_screen_snapshot, (0,0))
+                    pygame.display.flip()
+                    time.sleep(delay_per_step)
+                
+                if not need_refetch.is_set(): # Ensure screen is black if fade completed fully
+                    screen.fill((0,0,0))
+                    pygame.display.flip()
+
+            if state == "default" or need_refetch.is_set(): # If state changed or refetch needed, break from outer for loop
                 break
