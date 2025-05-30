@@ -104,6 +104,19 @@ def capture_website(url, timeout=10):
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         
+        # Force viewport to exactly 1920x1080 using JavaScript
+        driver.execute_script("""
+            document.body.style.width = '1920px';
+            document.body.style.height = '1080px';
+            document.body.style.overflow = 'hidden';
+            document.documentElement.style.width = '1920px';
+            document.documentElement.style.height = '1080px';
+            document.documentElement.style.overflow = 'hidden';
+        """)
+        
+        # Wait a moment for the viewport change to take effect
+        time.sleep(0.5)
+        
         # Take screenshot - should be exactly 1920x1080
         screenshot_data = driver.get_screenshot_as_png()
         driver.quit()
@@ -112,8 +125,14 @@ def capture_website(url, timeout=10):
         image_data = BytesIO(screenshot_data)
         image = pygame.image.load(image_data)
         
-        # Image should already be 1920x1080, so just scale to fit screen display
+        # Verify we got exactly 1920x1080, if not force it
         img_width, img_height = image.get_size()
+        if (img_width, img_height) != (1920, 1080):
+            logger.warning(f"Screenshot captured at {img_width}x{img_height}, forcing to 1920x1080")
+            image = pygame.transform.smoothscale(image, (1920, 1080))
+            img_width, img_height = 1920, 1080
+        
+        # Scale to fit screen display if needed
         width_ratio = screen_width / img_width
         height_ratio = screen_height / img_height
         scale_ratio = min(width_ratio, height_ratio)
@@ -673,10 +692,28 @@ while True:
                         screen.blit(scaled_surface, (center_x, center_y))
                         
                         # Add text overlay if needed
-                        if slide_data.get('text_surface') and slide_data.get('text_rect'):
-                            text_surface = slide_data['text_surface']
-                            text_rect = slide_data['text_rect']
-                            screen.blit(text_surface, (center_x + text_rect.left, center_y + text_rect.top))
+                        if slide_data.get('text_params') and slide_data['text_params'].get('text'):
+                            text_params = slide_data['text_params']
+                            
+                            # Check if we need to update datetime dynamically
+                            if '{datetime}' in text_params.get('text', ''):
+                                # For video, we need a temporary surface to process text overlay
+                                temp_surface = pygame.Surface((scaled_surface.get_width(), scaled_surface.get_height()), pygame.SRCALPHA)
+                                current_text_surface, current_text_rect = process_text_overlay(temp_surface, text_params)
+                                if current_text_surface and current_text_rect:
+                                    text_surface = current_text_surface
+                                    text_rect = current_text_rect
+                                else:
+                                    # Fallback to pre-generated surface
+                                    text_surface = slide_data.get('text_surface')
+                                    text_rect = slide_data.get('text_rect')
+                            else:
+                                # Use pre-generated surface for static text
+                                text_surface = slide_data.get('text_surface')
+                                text_rect = slide_data.get('text_rect')
+                            
+                            if text_surface and text_rect:
+                                screen.blit(text_surface, (center_x + text_rect.left, center_y + text_rect.top))
                         
                         pygame.display.flip()
                     
@@ -768,17 +805,33 @@ while True:
                     screen.blit(slide_data['image'], (center_x, center_y))
 
                     # Render text
-                    if slide_data.get('text_surface') and slide_data.get('text_rect'):
-                        text_surface = slide_data['text_surface']
-                        original_text_rect = slide_data['text_rect']
+                    if slide_data.get('text_params') and slide_data['text_params'].get('text'):
+                        text_params = slide_data['text_params']
                         
-                        if slide_data.get('scroll_text'):
-                            screen.blit(text_surface, (scroll_x, center_y + original_text_rect.top))
-                            scroll_x -= 2
-                            if scroll_x < -text_surface.get_width():
-                                scroll_x = screen_width
+                        # Check if we need to update datetime dynamically
+                        if '{datetime}' in text_params.get('text', ''):
+                            # Regenerate text surface with current time
+                            current_text_surface, current_text_rect = process_text_overlay(slide_data['image'], text_params)
+                            if current_text_surface and current_text_rect:
+                                text_surface = current_text_surface
+                                original_text_rect = current_text_rect
+                            else:
+                                # Fallback to pre-generated surface
+                                text_surface = slide_data.get('text_surface')
+                                original_text_rect = slide_data.get('text_rect')
                         else:
-                            screen.blit(text_surface, (center_x + original_text_rect.left, center_y + original_text_rect.top))
+                            # Use pre-generated surface for static text
+                            text_surface = slide_data.get('text_surface')
+                            original_text_rect = slide_data.get('text_rect')
+                        
+                        if text_surface and original_text_rect:
+                            if slide_data.get('scroll_text'):
+                                screen.blit(text_surface, (scroll_x, center_y + original_text_rect.top))
+                                scroll_x -= 2
+                                if scroll_x < -text_surface.get_width():
+                                    scroll_x = screen_width
+                            else:
+                                screen.blit(text_surface, (center_x + original_text_rect.left, center_y + original_text_rect.top))
                     
                     pygame.display.flip()
                     
