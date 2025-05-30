@@ -97,7 +97,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.14.0/Sortable.min.js"></script>
   <script>
-    const dbUrl = 'http://couchdb.utb.circ10.dcn:80/slideshows';
+    const dbUrl = 'http://192.168.1.215:5984/slideshows';
     let currentTvId = null, currentRev = null, localSlides = [], history = [], historyIndex = -1;
     let selectedSlides = new Set();
     let hasUnsavedChanges = false; // Track unsaved changes

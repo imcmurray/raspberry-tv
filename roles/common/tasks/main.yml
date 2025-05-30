@@ -16,4 +16,7 @@
     name:
       - pygame
       - requests
+      - opencv-python
+      - numpy
+      - selenium
     executable: pip3
