@@ -108,14 +108,20 @@ def capture_website(url, timeout=10):
         # Arch Linux specific flags for better stability
         chrome_options.add_argument('--disable-software-rasterizer')
         chrome_options.add_argument('--disable-background-networking')
-        chrome_options.add_argument('--disable-background-timer-throttling')
-        chrome_options.add_argument('--disable-renderer-backgrounding')
-        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
         chrome_options.add_argument('--disable-ipc-flooding-protection')
         chrome_options.add_argument('--disable-component-extensions-with-background-pages')
         # Memory management for long-running processes
         chrome_options.add_argument('--memory-pressure-off')
         chrome_options.add_argument('--max_old_space_size=4096')
+        # Additional session stability flags
+        chrome_options.add_argument('--disable-features=TranslateUI')
+        chrome_options.add_argument('--no-first-run')
+        chrome_options.add_argument('--no-default-browser-check')
+        chrome_options.add_argument('--disable-session-crashed-bubble')
+        chrome_options.add_argument('--disable-restore-session-state')
+        chrome_options.add_argument('--disable-hang-monitor')
+        # Force single process to avoid session issues
+        chrome_options.add_argument('--single-process')
         
         try:
             # Try Chromium first (common on Arch), then fallback to Chrome
@@ -134,12 +140,18 @@ def capture_website(url, timeout=10):
             logger.error("  sudo pacman -S chromium chromedriver python-selenium")
             return None, None
             
+        # Allow driver to fully initialize
+        time.sleep(1.0)
+        
         # Set timeouts with more conservative values
         driver.set_page_load_timeout(timeout)
         driver.implicitly_wait(5)
         
         # Set window size to exactly 1920x1080
         driver.set_window_size(1920, 1080)
+        
+        # Additional wait for window size to take effect
+        time.sleep(0.5)
         
         # Navigate to URL with retry logic
         max_retries = 2
@@ -193,25 +205,65 @@ def capture_website(url, timeout=10):
         except Exception as js_error:
             logger.warning(f"JavaScript execution failed for {url}: {js_error}")
         
-        # Wait a moment for the viewport change to take effect
-        time.sleep(0.5)
+        # Wait for the viewport change to take effect and page to stabilize
+        time.sleep(2.0)
         
-        # Take screenshot with validation that driver is still active
+        # Take screenshot with robust validation that driver is still active
         screenshot_data = None
         try:
-            # Verify the driver session is still active
-            driver.current_url  # This will throw if session is closed
+            # Multiple validation checks for session state
+            if not driver:
+                raise Exception("Driver is None")
+            
+            # Check if driver session is still active with multiple methods
+            try:
+                # Method 1: Check current_url
+                current_url = driver.current_url
+                logger.debug(f"Driver session active, current URL: {current_url}")
+            except Exception as url_check_error:
+                logger.warning(f"Driver current_url check failed: {url_check_error}")
+                raise Exception(f"Driver session not active: {url_check_error}")
+            
+            try:
+                # Method 2: Check window handles
+                handles = driver.window_handles
+                if not handles:
+                    raise Exception("No window handles available")
+                logger.debug(f"Driver has {len(handles)} window handle(s)")
+            except Exception as handles_error:
+                logger.warning(f"Driver window handles check failed: {handles_error}")
+                raise Exception(f"Driver window not available: {handles_error}")
+            
+            try:
+                # Method 3: Check if we can execute a simple script
+                driver.execute_script("return document.readyState;")
+                logger.debug("Driver script execution test passed")
+            except Exception as script_error:
+                logger.warning(f"Driver script execution failed: {script_error}")
+                raise Exception(f"Driver not responsive: {script_error}")
+            
+            # If all validations pass, take the screenshot
             screenshot_data = driver.get_screenshot_as_png()
+            logger.debug(f"Screenshot captured successfully ({len(screenshot_data)} bytes)")
+            
         except Exception as screenshot_error:
             logger.error(f"Failed to take screenshot for {url}: {screenshot_error}")
-            raise screenshot_error
+            # Don't re-raise here - let the outer handler deal with it
+            screenshot_data = None
         finally:
-            # Ensure driver is always closed
-            try:
-                if driver:
-                    driver.quit()
-            except Exception as cleanup_error:
-                logger.warning(f"Error during driver cleanup: {cleanup_error}")
+            # Ensure driver is always closed with multiple attempts
+            if driver:
+                for attempt in range(3):
+                    try:
+                        driver.quit()
+                        logger.debug(f"Driver cleanup successful on attempt {attempt + 1}")
+                        break
+                    except Exception as cleanup_error:
+                        if attempt == 2:  # Last attempt
+                            logger.error(f"Driver cleanup failed after 3 attempts: {cleanup_error}")
+                        else:
+                            logger.warning(f"Driver cleanup attempt {attempt + 1} failed: {cleanup_error}")
+                            time.sleep(0.5)  # Wait before retry
         
         if not screenshot_data:
             logger.error(f"No screenshot data captured for {url}")
