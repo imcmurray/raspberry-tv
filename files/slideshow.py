@@ -83,6 +83,8 @@ def capture_website(url, timeout=10):
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--force-device-scale-factor=1')
+        chrome_options.add_argument('--high-dpi-support=1')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-web-security')
         chrome_options.add_argument('--allow-running-insecure-content')
@@ -98,6 +100,9 @@ def capture_website(url, timeout=10):
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         
+        # Set viewport to full HD
+        driver.set_window_size(1920, 1080)
+        
         # Take screenshot
         screenshot_data = driver.get_screenshot_as_png()
         driver.quit()
@@ -106,8 +111,14 @@ def capture_website(url, timeout=10):
         image_data = BytesIO(screenshot_data)
         image = pygame.image.load(image_data)
         
-        # Scale to screen size
-        img_width, img_height = image.get_size()
+        # Ensure image is exactly 1920x1080 for full HD
+        if image.get_size() != (1920, 1080):
+            scaled_image = pygame.transform.smoothscale(image, (1920, 1080))
+        else:
+            scaled_image = image
+        
+        # Now scale to fit screen if needed
+        img_width, img_height = scaled_image.get_size()
         width_ratio = screen_width / img_width
         height_ratio = screen_height / img_height
         scale_ratio = min(width_ratio, height_ratio)
@@ -115,7 +126,7 @@ def capture_website(url, timeout=10):
         new_width = int(img_width * scale_ratio)
         new_height = int(img_height * scale_ratio)
         
-        scaled_image = pygame.transform.smoothscale(image, (new_width, new_height))
+        scaled_image = pygame.transform.smoothscale(scaled_image, (new_width, new_height))
         
         return scaled_image, screenshot_data
         
@@ -221,18 +232,26 @@ def website_capture_worker():
             
             if slide_data:
                 url = slide_data.get('url')
-                if url and url not in website_cache:
-                    logger.info(f"Pre-capturing website: {url}")
-                    surface, screenshot_data = capture_website(url)
-                    if surface and screenshot_data:
-                        # Upload to CouchDB
-                        filename = upload_website_screenshot(url, screenshot_data)
-                        if filename:
-                            website_cache[url] = {
-                                'surface': surface,
-                                'filename': filename,
-                                'timestamp': time.time()
-                            }
+                if url:
+                    # Check if we need to refresh this URL (not in cache or stale)
+                    needs_refresh = True
+                    if url in website_cache:
+                        cached = website_cache[url]
+                        if time.time() - cached['timestamp'] < 60:  # Less than 1 minute old
+                            needs_refresh = False
+                    
+                    if needs_refresh:
+                        logger.info(f"Pre-capturing website: {url}")
+                        surface, screenshot_data = capture_website(url)
+                        if surface and screenshot_data:
+                            # Upload to CouchDB
+                            filename = upload_website_screenshot(url, screenshot_data)
+                            if filename:
+                                website_cache[url] = {
+                                    'surface': surface,
+                                    'filename': filename,
+                                    'timestamp': time.time()
+                                }
             
             time.sleep(1)  # Check queue every second
             
@@ -295,14 +314,18 @@ def fetch_content(slide_doc, text_params=None):
         # Check cache first
         if url in website_cache:
             cached = website_cache[url]
-            # Use cached version if less than 5 minutes old
-            if time.time() - cached['timestamp'] < 300:
+            # Use cached version if less than 1 minute old for more frequent updates
+            if time.time() - cached['timestamp'] < 60:
                 image = cached['surface']
                 # Process text overlay if needed
                 if text_params and text_params.get('text'):
                     text_surface, text_rect = process_text_overlay(image, text_params)
                     return image, text_surface, text_rect, cached['filename']
                 return image, None, None, cached['filename']
+            else:
+                # Remove stale cache entry
+                logger.info(f"Removing stale cache entry for: {url}")
+                del website_cache[url]
         
         # Capture fresh screenshot
         logger.info(f"Capturing fresh website screenshot: {url}")
