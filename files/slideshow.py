@@ -76,6 +76,7 @@ capture_lock = threading.Lock()
 # Function to capture website screenshot
 def capture_website(url, timeout=10):
     """Capture website screenshot and return pygame surface"""
+    driver = None
     try:
         # Setup headless Chrome to capture at exactly 1920x1080
         chrome_options = Options()
@@ -98,6 +99,12 @@ def capture_website(url, timeout=10):
         chrome_options.add_argument('--disable-notifications')
         chrome_options.add_argument('--disable-default-apps')
         chrome_options.add_argument('--virtual-time-budget=5000')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-dev-tools')
+        chrome_options.add_argument('--disable-crash-reporter')
+        chrome_options.add_argument('--disable-in-process-stack-traces')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
         
         try:
             driver = webdriver.Chrome(options=chrome_options)
@@ -106,54 +113,88 @@ def capture_website(url, timeout=10):
             logger.error("Make sure Chromium browser and ChromeDriver are installed")
             return None, None
             
+        # Set timeouts with more conservative values
         driver.set_page_load_timeout(timeout)
+        driver.implicitly_wait(5)
         
         # Set window size to exactly 1920x1080
         driver.set_window_size(1920, 1080)
         
-        # Navigate to URL
-        driver.get(url)
+        # Navigate to URL with retry logic
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                driver.get(url)
+                break
+            except Exception as nav_error:
+                logger.warning(f"Navigation attempt {attempt + 1} failed for {url}: {nav_error}")
+                if attempt == max_retries - 1:
+                    raise nav_error
+                time.sleep(1)
         
-        # Wait for page to load
-        WebDriverWait(driver, timeout).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
+        # Wait for page to load with better error handling
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception as wait_error:
+            logger.warning(f"Page load timeout for {url}, proceeding anyway: {wait_error}")
         
         # Force viewport to exactly 1920x1080 using JavaScript
-        driver.execute_script("""
-            // Force the viewport size
-            document.body.style.width = '1920px';
-            document.body.style.height = '1080px';
-            document.body.style.overflow = 'hidden';
-            document.body.style.margin = '0';
-            document.body.style.padding = '0';
-            document.documentElement.style.width = '1920px';
-            document.documentElement.style.height = '1080px';
-            document.documentElement.style.overflow = 'hidden';
-            document.documentElement.style.margin = '0';
-            document.documentElement.style.padding = '0';
-            
-            // Remove any potential UI elements that could affect size
-            var elements = document.querySelectorAll('*');
-            for (var i = 0; i < elements.length; i++) {
-                var el = elements[i];
-                if (el.style) {
-                    el.style.maxWidth = 'none';
-                    el.style.maxHeight = 'none';
+        try:
+            driver.execute_script("""
+                // Force the viewport size
+                document.body.style.width = '1920px';
+                document.body.style.height = '1080px';
+                document.body.style.overflow = 'hidden';
+                document.body.style.margin = '0';
+                document.body.style.padding = '0';
+                document.documentElement.style.width = '1920px';
+                document.documentElement.style.height = '1080px';
+                document.documentElement.style.overflow = 'hidden';
+                document.documentElement.style.margin = '0';
+                document.documentElement.style.padding = '0';
+                
+                // Remove any potential UI elements that could affect size
+                var elements = document.querySelectorAll('*');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    if (el.style) {
+                        el.style.maxWidth = 'none';
+                        el.style.maxHeight = 'none';
+                    }
                 }
-            }
-            
-            // Force window size
-            window.innerWidth = 1920;
-            window.innerHeight = 1080;
-        """)
+                
+                // Force window size
+                window.innerWidth = 1920;
+                window.innerHeight = 1080;
+            """)
+        except Exception as js_error:
+            logger.warning(f"JavaScript execution failed for {url}: {js_error}")
         
         # Wait a moment for the viewport change to take effect
         time.sleep(0.5)
         
-        # Take screenshot - should be exactly 1920x1080
-        screenshot_data = driver.get_screenshot_as_png()
-        driver.quit()
+        # Take screenshot with validation that driver is still active
+        screenshot_data = None
+        try:
+            # Verify the driver session is still active
+            driver.current_url  # This will throw if session is closed
+            screenshot_data = driver.get_screenshot_as_png()
+        except Exception as screenshot_error:
+            logger.error(f"Failed to take screenshot for {url}: {screenshot_error}")
+            raise screenshot_error
+        finally:
+            # Ensure driver is always closed
+            try:
+                if driver:
+                    driver.quit()
+            except Exception as cleanup_error:
+                logger.warning(f"Error during driver cleanup: {cleanup_error}")
+        
+        if not screenshot_data:
+            logger.error(f"No screenshot data captured for {url}")
+            return None, None
         
         # Convert to pygame surface
         image_data = BytesIO(screenshot_data)
@@ -180,6 +221,12 @@ def capture_website(url, timeout=10):
         
     except Exception as e:
         logger.error(f"Error capturing website {url}: {e}")
+        # Ensure driver cleanup even on error
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
         return None, None
 
 # Function to upload website screenshot to CouchDB
@@ -290,16 +337,39 @@ def website_capture_worker():
                     
                     if needs_refresh:
                         logger.info(f"Pre-capturing website: {url}")
-                        surface, screenshot_data = capture_website(url)
-                        if surface and screenshot_data:
-                            # Upload to CouchDB
-                            filename = upload_website_screenshot(url, screenshot_data)
-                            if filename:
-                                website_cache[url] = {
-                                    'surface': surface,
-                                    'filename': filename,
-                                    'timestamp': time.time()
-                                }
+                        max_attempts = 3
+                        for attempt in range(max_attempts):
+                            try:
+                                surface, screenshot_data = capture_website(url, timeout=15)
+                                if surface and screenshot_data:
+                                    # Upload to CouchDB
+                                    filename = upload_website_screenshot(url, screenshot_data)
+                                    if filename:
+                                        website_cache[url] = {
+                                            'surface': surface,
+                                            'filename': filename,
+                                            'timestamp': time.time()
+                                        }
+                                        logger.info(f"Successfully pre-captured website: {url}")
+                                    else:
+                                        # Store in cache anyway for local use
+                                        website_cache[url] = {
+                                            'surface': surface,
+                                            'filename': f"website_{int(time.time())}.png",
+                                            'timestamp': time.time()
+                                        }
+                                        logger.info(f"Website captured but upload failed, cached locally: {url}")
+                                    break
+                                else:
+                                    logger.warning(f"Attempt {attempt + 1} failed for website: {url}")
+                                    if attempt < max_attempts - 1:
+                                        time.sleep(2)  # Wait before retry
+                            except Exception as capture_error:
+                                logger.error(f"Capture attempt {attempt + 1} failed for {url}: {capture_error}")
+                                if attempt < max_attempts - 1:
+                                    time.sleep(2)  # Wait before retry
+                                else:
+                                    logger.error(f"All {max_attempts} capture attempts failed for {url}")
             
             time.sleep(1)  # Check queue every second
             
@@ -375,9 +445,26 @@ def fetch_content(slide_doc, text_params=None):
                 logger.info(f"Removing stale cache entry for: {url}")
                 del website_cache[url]
         
-        # Capture fresh screenshot
+        # Capture fresh screenshot with retry logic
         logger.info(f"Capturing fresh website screenshot: {url}")
-        surface, screenshot_data = capture_website(url)
+        max_capture_attempts = 3
+        surface = None
+        screenshot_data = None
+        
+        for attempt in range(max_capture_attempts):
+            try:
+                surface, screenshot_data = capture_website(url, timeout=20)
+                if surface and screenshot_data:
+                    break
+                else:
+                    logger.warning(f"Website capture attempt {attempt + 1} failed for {url}")
+                    if attempt < max_capture_attempts - 1:
+                        time.sleep(2)  # Wait before retry
+            except Exception as capture_error:
+                logger.error(f"Website capture attempt {attempt + 1} error for {url}: {capture_error}")
+                if attempt < max_capture_attempts - 1:
+                    time.sleep(2)  # Wait before retry
+        
         if surface and screenshot_data:
             filename = upload_website_screenshot(url, screenshot_data)
             if filename:
@@ -390,8 +477,14 @@ def fetch_content(slide_doc, text_params=None):
                 content_name = filename
             else:
                 # Use surface without uploading
+                website_cache[url] = {
+                    'surface': surface,
+                    'filename': f"website_{int(time.time())}.png",
+                    'timestamp': time.time()
+                }
                 image = surface
                 content_name = f"website_{int(time.time())}.png"
+                logger.info(f"Website captured but upload failed, cached locally: {url}")
         else:
             # Try to use cached version as fallback
             if url in website_cache:
@@ -400,7 +493,7 @@ def fetch_content(slide_doc, text_params=None):
                 image = cached['surface']
                 content_name = cached['filename']
             else:
-                logger.error(f"Failed to capture website and no cache available: {url}")
+                logger.error(f"Failed to capture website after {max_capture_attempts} attempts and no cache available: {url}")
                 return None, None, None, None
                 
     elif content_type == 'video':
