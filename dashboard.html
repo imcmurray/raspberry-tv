@@ -88,7 +88,7 @@
                 // Filter for actual TV config documents
                 return allDocs.rows
                     .map(row => row.doc)
-                    .filter(doc => doc && doc.slides && doc.name && !doc._id.startsWith('_design/') && !doc._id.startsWith('status_'));
+                    .filter(doc => doc && doc.name && !doc._id.startsWith('_design/') && !doc._id.startsWith('status_'));
             } catch (error) {
                 console.error('Failed to fetch TV configs:', error);
                 dashboardContainer.innerHTML = '<p class="error">Error loading TV configurations.</p>';

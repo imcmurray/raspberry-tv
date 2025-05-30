@@ -14,6 +14,10 @@
     .image-item { position: relative; cursor: pointer; }
     .image-item img { width: 100%; height: auto; border-radius: 5px; }
     .image-item.selected { outline: 2px solid blue; }
+    .content-type-badge { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; text-transform: uppercase; }
+    .content-type-badge.image { background: rgba(76, 175, 80, 0.8); }
+    .content-type-badge.video { background: rgba(244, 67, 54, 0.8); }
+    .content-type-badge.website { background: rgba(33, 150, 243, 0.8); }
     .image-details { margin-top: 5px; }
     .image-details input, .image-details select { width: 100%; margin: 5px 0; padding: 5px; }
     .image-details input[type="color"] { width: 50px; height: 30px; padding: 0; }
@@ -22,8 +26,10 @@
     #save-button, #bulk-delete, #theme-toggle, #add-tv-button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 10px 5px; }
     #save-button:hover, #bulk-delete:hover, #theme-toggle:hover, #add-tv-button:hover { background: #45a049; }
     #file-input, #tv-name-input, #new-tv-uuid { margin: 10px 0; padding: 5px; }
-    #drop-zone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin: 10px 0; }
-    #drop-zone.dragover { background: #e0e0e0; }
+    #drop-zone, #video-drop-zone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin: 10px 0; }
+    #drop-zone.dragover, #video-drop-zone.dragover { background: #e0e0e0; }
+    .dark #content-type-selector { border-color: #555; background: #2a2a2a; }
+    .dark #website-url { background: #444; border-color: #666; color: #ddd; }
     #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; }
     #modal img { max-width: 90%; max-height: 90%; }
     #modal-content { background: white; padding: 20px; border-radius: 5px; text-align: center; }
@@ -58,8 +64,31 @@
     <div id="default-message" style="display:none;"> <!-- Initially hidden, shown by JS if no TVs -->
       <p>No TVs configured. Use the form above to add a new TV to start managing slideshows.</p>
     </div>
+    <div id="content-type-selector" style="display:none; margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 5px;">
+      <h3>Add Content</h3>
+      <div style="margin-bottom: 15px;">
+        <label><input type="radio" name="content-type" value="image" checked> Image Upload</label>
+        <label style="margin-left: 15px;"><input type="radio" name="content-type" value="video"> Video Upload</label>
+        <label style="margin-left: 15px;"><input type="radio" name="content-type" value="website"> Website URL</label>
+      </div>
+      <div id="image-upload-section">
+        <div id="drop-zone">Drag & Drop Images Here or Click to Upload<input type="file" id="file-input" multiple accept="image/*" style="display:none;"></div>
+      </div>
+      <div id="video-upload-section" style="display:none;">
+        <div id="video-drop-zone" style="border: 2px dashed #ccc; padding: 20px; text-align: center; margin: 10px 0;">Drag & Drop Videos Here or Click to Upload (Max 50MB)<input type="file" id="video-input" multiple accept="video/*" style="display:none;"></div>
+        <div id="video-progress" style="display:none; margin-top: 10px;">
+          <div style="background: #f0f0f0; border-radius: 5px; overflow: hidden;">
+            <div id="video-progress-bar" style="background: #4CAF50; height: 20px; width: 0%; transition: width 0.3s;"></div>
+          </div>
+          <p id="video-progress-text">Uploading...</p>
+        </div>
+      </div>
+      <div id="website-input-section" style="display:none;">
+        <input type="url" id="website-url" placeholder="Enter website URL (e.g., https://example.com)" style="width: 70%; padding: 10px; margin-right: 10px;">
+        <button id="add-website-button" style="padding: 10px 20px; background: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer;">Add Website</button>
+      </div>
+    </div>
     <div id="image-grid" style="display:none;"></div>
-    <div id="drop-zone" style="display:none;">Drag & Drop Images Here or Click to Upload<input type="file" id="file-input" multiple accept="image/*" style="display:none;"></div>
     <button id="save-button" style="display:none;">Save Changes</button>
   </div>
   <div id="modal"><div id="modal-content"><img id="modal-image"><p id="modal-meta"></p><button onclick="closeModal()">Close</button></div></div>
@@ -75,6 +104,15 @@
 
     // Initialize theme
     if (localStorage.getItem('theme') === 'dark') document.body.classList.toggle('dark');
+
+    // Content type selector handling
+    document.querySelectorAll('input[name="content-type"]').forEach(radio => {
+      radio.addEventListener('change', function() {
+        document.getElementById('image-upload-section').style.display = this.value === 'image' ? 'block' : 'none';
+        document.getElementById('video-upload-section').style.display = this.value === 'video' ? 'block' : 'none';
+        document.getElementById('website-input-section').style.display = this.value === 'website' ? 'block' : 'none';
+      });
+    });
 
     function generateUUID() { // Public Domain/MIT
       var d = new Date().getTime();//Timestamp
@@ -290,8 +328,28 @@
         item.className = 'image-item';
         if (slide.name === currentSlide) item.classList.add('current-image');
         if (selectedSlides.has(slide.name)) item.classList.add('selected');
+        
+        // Add content type badge
+        const badge = document.createElement('div');
+        badge.className = `content-type-badge ${slide.type || 'image'}`;
+        badge.textContent = slide.type || 'image';
+        
         const img = document.createElement('img');
-        img.src = `${dbUrl}/${tvId}/${slide.name}`;
+        if (slide.type === 'video') {
+          // For videos, show a video icon or first frame
+          img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDIwMCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwMCIgaGVpZ2h0PSIxNTAiIGZpbGw9IiMzMzMiLz48cG9seWdvbiBwb2ludHM9IjcwLDUwIDcwLDEwMCAxMzAsNzUiIGZpbGw9IiNmZmYiLz48dGV4dCB4PSIxMDAiIHk9IjEzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iI2ZmZiIgZm9udC1zaXplPSIxMiI+VklERU88L3RleHQ+PC9zdmc+';
+          img.alt = 'Video thumbnail';
+        } else if (slide.type === 'website') {
+          // For websites, try to load the screenshot or show a web icon
+          if (slide.screenshot_filename) {
+            img.src = `${dbUrl}/${tvId}/${slide.screenshot_filename}`;
+          } else {
+            img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDIwMCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwMCIgaGVpZ2h0PSIxNTAiIGZpbGw9IiMyMTk2RjMiLz48cmVjdCB4PSIyMCIgeT0iMzAiIHdpZHRoPSIxNjAiIGhlaWdodD0iMTAwIiBmaWxsPSIjZmZmIiByeD0iNSIvPjx0ZXh0IHg9IjEwMCIgeT0iOTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiMzMzMiIGZvbnQtc2l6ZT0iMTQiPldFQlNJVEU8L3RleHQ+PC9zdmc+';
+          }
+          img.alt = 'Website screenshot';
+        } else {
+          img.src = `${dbUrl}/${tvId}/${slide.name}`;
+        }
         img.addEventListener('click', () => showModal(img.src, slide));
         const deleteBtn = document.createElement('button');
         deleteBtn.textContent = 'Delete';
@@ -409,6 +467,7 @@
         details.appendChild(scrollTextCheckbox);
         details.appendChild(textBgColorLabel);
         details.appendChild(textBgColorInput);
+        item.appendChild(badge);
         item.appendChild(img);
         item.appendChild(deleteBtn);
         item.appendChild(details);
@@ -452,8 +511,16 @@
       const modalMeta = document.getElementById('modal-meta');
       
       modalImg.src = src;
-      const attachment = (await (await fetch(`${dbUrl}/${currentTvId}`)).json())._attachments[slide.name];
-      modalMeta.textContent = `Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, Type: ${attachment.content_type}, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s, Transition: ${slide.transition_time || 0}ms, Scroll: ${slide.scroll_text ? 'Yes' : 'No'}, Text BG: ${slide.text_background_color || '#000000'}`;
+      const doc = await (await fetch(`${dbUrl}/${currentTvId}`)).json();
+      const attachment = doc._attachments ? doc._attachments[slide.name] : null;
+      let metaText = `Type: ${slide.type || 'image'}`;
+      if (slide.type === 'website') {
+        metaText += `, URL: ${slide.url || 'Unknown'}`;
+      } else if (attachment) {
+        metaText += `, Name: ${slide.name}, Size: ${(attachment.length / 1024).toFixed(2)} KB, File Type: ${attachment.content_type}`;
+      }
+      metaText += `, Text: "${slide.text || 'None'}", Size: ${slide.text_size || 'medium'}, Color: ${slide.text_color || '#ffffff'}, Position: ${slide.text_position || 'bottom-center'}, Duration: ${slide.duration || 10}s, Transition: ${slide.transition_time || 0}ms, Scroll: ${slide.scroll_text ? 'Yes' : 'No'}, Text BG: ${slide.text_background_color || '#000000'}`;
+      modalMeta.textContent = metaText;
 
       // Ensure modal-content is positioned relatively for absolute positioning of overlay
       modalContent.style.position = 'relative';
@@ -565,6 +632,36 @@
     });
     fileInput.addEventListener('change', () => handleFiles(fileInput.files));
 
+    // Video upload handling
+    const videoDropZone = document.getElementById('video-drop-zone');
+    const videoInput = document.getElementById('video-input');
+    videoDropZone.addEventListener('click', () => videoInput.click());
+    videoDropZone.addEventListener('dragover', e => { e.preventDefault(); videoDropZone.classList.add('dragover'); });
+    videoDropZone.addEventListener('dragleave', () => videoDropZone.classList.remove('dragover'));
+    videoDropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      videoDropZone.classList.remove('dragover');
+      handleVideoFiles(e.dataTransfer.files);
+    });
+    videoInput.addEventListener('change', () => handleVideoFiles(videoInput.files));
+
+    // Website URL handling
+    document.getElementById('add-website-button').addEventListener('click', () => {
+      const url = document.getElementById('website-url').value.trim();
+      if (url) {
+        addWebsiteSlide(url);
+        document.getElementById('website-url').value = '';
+      } else {
+        showToast('Please enter a valid website URL');
+      }
+    });
+
+    document.getElementById('website-url').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('add-website-button').click();
+      }
+    });
+
     async function handleFiles(files) {
       if (!currentTvId) {
         showToast('Please select a TV first');
@@ -614,7 +711,8 @@
                 const data = await response.json();
                 currentRev = data.rev;
                 const slide = { 
-                  name: uniqueName, 
+                  name: uniqueName,
+                  type: 'image',
                   text: '', 
                   text_size: 'medium', 
                   text_color: '#ffffff', 
@@ -801,6 +899,314 @@
       // Moved hideLoading and fileInput.value clearing to be conditional within blob callback
     }
 
+    // Handle video file uploads
+    async function handleVideoFiles(files) {
+      if (!currentTvId) {
+        showToast('Please select a TV first');
+        return;
+      }
+      
+      for (let file of files) {
+        // Check file size (50MB limit)
+        if (file.size > 50 * 1024 * 1024) {
+          showToast(`Video file ${file.name} is too large. Maximum size is 50MB.`);
+          continue;
+        }
+        
+        const originalFileName = file.name;
+        const uniqueName = Date.now() + '_' + originalFileName;
+        
+        showLoading();
+        document.getElementById('video-progress').style.display = 'block';
+        
+        try {
+          const uploadUrl = `${dbUrl}/${currentTvId}/${uniqueName}?rev=${currentRev}`;
+          
+          const xhr = new XMLHttpRequest();
+          
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const percentComplete = (e.loaded / e.total) * 100;
+              document.getElementById('video-progress-bar').style.width = percentComplete + '%';
+              document.getElementById('video-progress-text').textContent = `Uploading: ${Math.round(percentComplete)}%`;
+            }
+          });
+          
+          xhr.onload = function() {
+            if (xhr.status === 200 || xhr.status === 201) {
+              const data = JSON.parse(xhr.responseText);
+              currentRev = data.rev;
+              
+              const slide = {
+                name: uniqueName,
+                type: 'video',
+                text: '',
+                text_size: 'medium',
+                text_color: '#ffffff',
+                text_position: 'bottom-center',
+                duration: 10,
+                transition_time: 0,
+                scroll_text: false,
+                text_background_color: '#000000'
+              };
+              
+              localSlides.push(slide);
+              hasUnsavedChanges = true;
+              
+              // Create video item in grid
+              const item = document.createElement('div');
+              item.className = 'image-item';
+              
+              const badge = document.createElement('div');
+              badge.className = 'content-type-badge video';
+              badge.textContent = 'video';
+              
+              const img = document.createElement('img');
+              img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDIwMCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwMCIgaGVpZ2h0PSIxNTAiIGZpbGw9IiMzMzMiLz48cG9seWdvbiBwb2ludHM9IjcwLDUwIDcwLDEwMCAxMzAsNzUiIGZpbGw9IiNmZmYiLz48dGV4dCB4PSIxMDAiIHk9IjEzMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iI2ZmZiIgZm9udC1zaXplPSIxMiI+VklERU88L3RleHQ+PC9zdmc+';
+              img.addEventListener('click', () => showModal(img.src, slide));
+              
+              const deleteBtn = document.createElement('button');
+              deleteBtn.textContent = 'Delete';
+              deleteBtn.className = 'delete-button';
+              deleteBtn.addEventListener('click', e => {
+                e.stopPropagation();
+                localSlides = localSlides.filter(s => s && s.name !== uniqueName);
+                hasUnsavedChanges = true;
+                addToHistory();
+                item.remove();
+              });
+              
+              // Create details section (same as images)
+              const details = createSlideDetails(slide);
+              
+              item.appendChild(badge);
+              item.appendChild(img);
+              item.appendChild(deleteBtn);
+              item.appendChild(details);
+              item.slide = slide;
+              
+              document.getElementById('image-grid').appendChild(item);
+              addToHistory();
+              showToast('Video uploaded successfully');
+            } else {
+              throw new Error('Upload failed');
+            }
+            
+            document.getElementById('video-progress').style.display = 'none';
+            hideLoading();
+          };
+          
+          xhr.onerror = function() {
+            showToast('Failed to upload video: ' + originalFileName);
+            document.getElementById('video-progress').style.display = 'none';
+            hideLoading();
+          };
+          
+          xhr.open('PUT', uploadUrl);
+          xhr.setRequestHeader('Content-Type', file.type);
+          xhr.send(file);
+          
+        } catch (error) {
+          console.error('Error uploading video:', error);
+          showToast('Failed to upload video: ' + originalFileName);
+          document.getElementById('video-progress').style.display = 'none';
+          hideLoading();
+        }
+      }
+      
+      videoInput.value = '';
+    }
+
+    // Add website slide
+    async function addWebsiteSlide(url) {
+      if (!currentTvId) {
+        showToast('Please select a TV first');
+        return;
+      }
+      
+      // Validate URL
+      try {
+        new URL(url);
+      } catch {
+        showToast('Please enter a valid URL');
+        return;
+      }
+      
+      const slide = {
+        name: `website_${Date.now()}`,
+        type: 'website',
+        url: url,
+        text: '',
+        text_size: 'medium',
+        text_color: '#ffffff',
+        text_position: 'bottom-center',
+        duration: 10,
+        transition_time: 0,
+        scroll_text: false,
+        text_background_color: '#000000'
+      };
+      
+      localSlides.push(slide);
+      hasUnsavedChanges = true;
+      
+      // Create website item in grid
+      const item = document.createElement('div');
+      item.className = 'image-item';
+      
+      const badge = document.createElement('div');
+      badge.className = 'content-type-badge website';
+      badge.textContent = 'website';
+      
+      const img = document.createElement('img');
+      img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDIwMCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjIwMCIgaGVpZ2h0PSIxNTAiIGZpbGw9IiMyMTk2RjMiLz48cmVjdCB4PSIyMCIgeT0iMzAiIHdpZHRoPSIxNjAiIGhlaWdodD0iMTAwIiBmaWxsPSIjZmZmIiByeD0iNSIvPjx0ZXh0IHg9IjEwMCIgeT0iOTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZpbGw9IiMzMzMiIGZvbnQtc2l6ZT0iMTQiPldFQlNJVEU8L3RleHQ+PC9zdmc+';
+      img.addEventListener('click', () => showModal(img.src, slide));
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.className = 'delete-button';
+      deleteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        localSlides = localSlides.filter(s => s && s.name !== slide.name);
+        hasUnsavedChanges = true;
+        addToHistory();
+        item.remove();
+      });
+      
+      // Add URL display in details
+      const details = createSlideDetails(slide);
+      const urlDisplay = document.createElement('div');
+      urlDisplay.style.fontSize = '12px';
+      urlDisplay.style.color = '#666';
+      urlDisplay.style.marginTop = '5px';
+      urlDisplay.textContent = `URL: ${url}`;
+      details.appendChild(urlDisplay);
+      
+      item.appendChild(badge);
+      item.appendChild(img);
+      item.appendChild(deleteBtn);
+      item.appendChild(details);
+      item.slide = slide;
+      
+      document.getElementById('image-grid').appendChild(item);
+      addToHistory();
+      showToast('Website added successfully');
+    }
+
+    // Helper function to create slide details
+    function createSlideDetails(slide) {
+      const details = document.createElement('div');
+      details.className = 'image-details';
+      
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.value = slide.text || '';
+      textInput.placeholder = 'Text or {datetime}';
+      textInput.addEventListener('input', () => {
+        slide.text = textInput.value;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const sizeSelect = document.createElement('select');
+      ['small', 'medium', 'large'].forEach(size => {
+        const option = document.createElement('option');
+        option.value = size;
+        option.textContent = size.charAt(0).toUpperCase() + size.slice(1);
+        if (size === (slide.text_size || 'medium')) option.selected = true;
+        sizeSelect.appendChild(option);
+      });
+      sizeSelect.addEventListener('change', () => {
+        slide.text_size = sizeSelect.value;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = slide.text_color || '#ffffff';
+      colorInput.addEventListener('input', () => {
+        slide.text_color = colorInput.value;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const positionSelect = document.createElement('select');
+      ['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'].forEach(pos => {
+        const option = document.createElement('option');
+        option.value = pos;
+        option.textContent = pos.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+        if (pos === (slide.text_position || 'bottom-center')) option.selected = true;
+        positionSelect.appendChild(option);
+      });
+      positionSelect.addEventListener('change', () => {
+        slide.text_position = positionSelect.value;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const durationSelect = document.createElement('select');
+      [5, 10, 15, 30, 60].forEach(t => {
+        const option = document.createElement('option');
+        option.value = t;
+        option.textContent = `${t} seconds`;
+        if (t === (slide.duration || 10)) option.selected = true;
+        durationSelect.appendChild(option);
+      });
+      durationSelect.addEventListener('change', () => {
+        slide.duration = parseInt(durationSelect.value);
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const transitionTimeLabel = document.createElement('label');
+      transitionTimeLabel.textContent = 'Transition (ms):';
+      const transitionTimeInput = document.createElement('input');
+      transitionTimeInput.type = 'number';
+      transitionTimeInput.min = '0';
+      transitionTimeInput.value = slide.transition_time || 0;
+      transitionTimeInput.addEventListener('input', () => {
+        slide.transition_time = parseInt(transitionTimeInput.value) || 0;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const scrollTextLabel = document.createElement('label');
+      scrollTextLabel.textContent = 'Scroll Text:';
+      const scrollTextCheckbox = document.createElement('input');
+      scrollTextCheckbox.type = 'checkbox';
+      scrollTextCheckbox.checked = slide.scroll_text || false;
+      scrollTextCheckbox.addEventListener('change', () => {
+        slide.scroll_text = scrollTextCheckbox.checked;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      const textBgColorLabel = document.createElement('label');
+      textBgColorLabel.textContent = 'Text BG Color:';
+      const textBgColorInput = document.createElement('input');
+      textBgColorInput.type = 'color';
+      textBgColorInput.value = slide.text_background_color || '#000000';
+      textBgColorInput.addEventListener('input', () => {
+        slide.text_background_color = textBgColorInput.value;
+        hasUnsavedChanges = true;
+        addToHistory();
+      });
+      
+      details.appendChild(textInput);
+      details.appendChild(sizeSelect);
+      details.appendChild(colorInput);
+      details.appendChild(positionSelect);
+      details.appendChild(durationSelect);
+      details.appendChild(transitionTimeLabel);
+      details.appendChild(transitionTimeInput);
+      details.appendChild(scrollTextLabel);
+      details.appendChild(scrollTextCheckbox);
+      details.appendChild(textBgColorLabel);
+      details.appendChild(textBgColorInput);
+      
+      return details;
+    }
+
     // Bulk delete
     document.getElementById('bulk-delete').addEventListener('click', () => {
       localSlides = localSlides.filter(slide => !selectedSlides.has(slide.name));
@@ -906,7 +1312,7 @@
       
       // Still hide these elements if no TV is selected or no TVs exist
       document.getElementById('image-grid').style.display = 'none';
-      document.getElementById('drop-zone').style.display = 'none';
+      document.getElementById('content-type-selector').style.display = 'none';
       document.getElementById('save-button').style.display = 'none';
       document.getElementById('tv-name-input').style.display = 'none';
       document.getElementById('rename-button').style.display = 'none';
@@ -918,7 +1324,7 @@
 
       // Show these elements when a TV is selected
       document.getElementById('image-grid').style.display = 'grid';
-      document.getElementById('drop-zone').style.display = 'block';
+      document.getElementById('content-type-selector').style.display = 'block';
       document.getElementById('save-button').style.display = 'block';
       // TV name input and rename button visibility is handled by tv-select change event
     }
