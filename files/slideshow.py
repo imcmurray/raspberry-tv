@@ -77,20 +77,24 @@ capture_lock = threading.Lock()
 def capture_website(url, timeout=10):
     """Capture website screenshot and return pygame surface"""
     try:
-        # Setup headless Chrome
+        # Setup headless Chrome to capture at exactly 1920x1080
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--force-device-scale-factor=1')
-        chrome_options.add_argument('--high-dpi-support=1')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-web-security')
         chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--force-device-scale-factor=1')
+        chrome_options.add_argument('--disable-background-timer-throttling')
+        chrome_options.add_argument('--disable-renderer-backgrounding')
+        chrome_options.add_argument('--window-size=1920,1080')
         
         driver = webdriver.Chrome(options=chrome_options)
         driver.set_page_load_timeout(timeout)
+        
+        # Set window size to exactly 1920x1080
+        driver.set_window_size(1920, 1080)
         
         # Navigate to URL
         driver.get(url)
@@ -100,10 +104,7 @@ def capture_website(url, timeout=10):
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         
-        # Set viewport to full HD
-        driver.set_window_size(1920, 1080)
-        
-        # Take screenshot
+        # Take screenshot - should be exactly 1920x1080
         screenshot_data = driver.get_screenshot_as_png()
         driver.quit()
         
@@ -111,14 +112,8 @@ def capture_website(url, timeout=10):
         image_data = BytesIO(screenshot_data)
         image = pygame.image.load(image_data)
         
-        # Ensure image is exactly 1920x1080 for full HD
-        if image.get_size() != (1920, 1080):
-            scaled_image = pygame.transform.smoothscale(image, (1920, 1080))
-        else:
-            scaled_image = image
-        
-        # Now scale to fit screen if needed
-        img_width, img_height = scaled_image.get_size()
+        # Image should already be 1920x1080, so just scale to fit screen display
+        img_width, img_height = image.get_size()
         width_ratio = screen_width / img_width
         height_ratio = screen_height / img_height
         scale_ratio = min(width_ratio, height_ratio)
@@ -126,7 +121,7 @@ def capture_website(url, timeout=10):
         new_width = int(img_width * scale_ratio)
         new_height = int(img_height * scale_ratio)
         
-        scaled_image = pygame.transform.smoothscale(scaled_image, (new_width, new_height))
+        scaled_image = pygame.transform.smoothscale(image, (new_width, new_height))
         
         return scaled_image, screenshot_data
         
