@@ -89,8 +89,23 @@ def capture_website(url, timeout=10):
         chrome_options.add_argument('--disable-background-timer-throttling')
         chrome_options.add_argument('--disable-renderer-backgrounding')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--force-viewport-size=1920,1080')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--hide-scrollbars')
+        chrome_options.add_argument('--disable-plugins')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-infobars')
+        chrome_options.add_argument('--disable-notifications')
+        chrome_options.add_argument('--disable-default-apps')
+        chrome_options.add_argument('--virtual-time-budget=5000')
         
-        driver = webdriver.Chrome(options=chrome_options)
+        try:
+            driver = webdriver.Chrome(options=chrome_options)
+        except Exception as chrome_error:
+            logger.error(f"Failed to initialize Chrome driver: {chrome_error}")
+            logger.error("Make sure Chromium browser and ChromeDriver are installed")
+            return None, None
+            
         driver.set_page_load_timeout(timeout)
         
         # Set window size to exactly 1920x1080
@@ -106,12 +121,31 @@ def capture_website(url, timeout=10):
         
         # Force viewport to exactly 1920x1080 using JavaScript
         driver.execute_script("""
+            // Force the viewport size
             document.body.style.width = '1920px';
             document.body.style.height = '1080px';
             document.body.style.overflow = 'hidden';
+            document.body.style.margin = '0';
+            document.body.style.padding = '0';
             document.documentElement.style.width = '1920px';
             document.documentElement.style.height = '1080px';
             document.documentElement.style.overflow = 'hidden';
+            document.documentElement.style.margin = '0';
+            document.documentElement.style.padding = '0';
+            
+            // Remove any potential UI elements that could affect size
+            var elements = document.querySelectorAll('*');
+            for (var i = 0; i < elements.length; i++) {
+                var el = elements[i];
+                if (el.style) {
+                    el.style.maxWidth = 'none';
+                    el.style.maxHeight = 'none';
+                }
+            }
+            
+            // Force window size
+            window.innerWidth = 1920;
+            window.innerHeight = 1080;
         """)
         
         # Wait a moment for the viewport change to take effect
