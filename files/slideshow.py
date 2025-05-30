@@ -105,12 +105,33 @@ def capture_website(url, timeout=10):
         chrome_options.add_argument('--disable-in-process-stack-traces')
         chrome_options.add_argument('--disable-logging')
         chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+        # Arch Linux specific flags for better stability
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--disable-background-networking')
+        chrome_options.add_argument('--disable-background-timer-throttling')
+        chrome_options.add_argument('--disable-renderer-backgrounding')
+        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+        chrome_options.add_argument('--disable-ipc-flooding-protection')
+        chrome_options.add_argument('--disable-component-extensions-with-background-pages')
+        # Memory management for long-running processes
+        chrome_options.add_argument('--memory-pressure-off')
+        chrome_options.add_argument('--max_old_space_size=4096')
         
         try:
-            driver = webdriver.Chrome(options=chrome_options)
+            # Try Chromium first (common on Arch), then fallback to Chrome
+            try:
+                chrome_options.binary_location = '/usr/bin/chromium'
+                driver = webdriver.Chrome(options=chrome_options)
+                logger.info("Using Chromium browser from /usr/bin/chromium")
+            except Exception:
+                # Fallback to default Chrome detection
+                chrome_options.binary_location = None
+                driver = webdriver.Chrome(options=chrome_options)
+                logger.info("Using default Chrome browser")
         except Exception as chrome_error:
             logger.error(f"Failed to initialize Chrome driver: {chrome_error}")
-            logger.error("Make sure Chromium browser and ChromeDriver are installed")
+            logger.error("Make sure Chromium/Chrome browser and ChromeDriver are installed:")
+            logger.error("  sudo pacman -S chromium chromedriver python-selenium")
             return None, None
             
         # Set timeouts with more conservative values
