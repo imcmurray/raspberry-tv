@@ -42,3 +42,15 @@
   loop:
     - slideshow
     - hdmi_sleep
+
+- name: Create slideshow manager web directory
+  file:
+    path: /var/www/html/slideshow_manager
+    state: directory
+    mode: 0755
+
+- name: Deploy dashboard.html
+  copy:
+    src: dashboard.html  # Assumes dashboard.html is in the root of the repo, relative to the playbook file
+    dest: /var/www/html/slideshow_manager/dashboard.html
+    mode: 0644

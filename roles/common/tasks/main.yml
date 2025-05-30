@@ -11,9 +11,22 @@
     name: python3-pip
     state: present
 
+- name: Install Chromium browser
+  apt:
+    name: chromium-browser
+    state: present
+
+- name: Install ChromeDriver
+  apt:
+    name: chromium-chromedriver
+    state: present
+
 - name: Install Python libraries
   pip:
     name:
       - pygame
       - requests
+      - opencv-python
+      - numpy
+      - selenium
     executable: pip3

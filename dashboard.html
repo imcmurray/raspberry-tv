@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TV Dashboard</title>
+    <style>
+        body { 
+            font-family: sans-serif; 
+            margin: 20px; 
+            background-color: #121212; /* Dark background for body */
+            color: #e0e0e0; /* Light text for body */
+        }
+        h1 {
+            color: #ffffff; /* White or very light color for main heading */
+        }
+        #dashboard-container { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+            gap: 20px; 
+        }
+        .tv-card { 
+            background-color: #1e1e1e; /* Dark background for cards */
+            border: 1px solid #333333; /* Slightly lighter border for cards */
+            border-radius: 8px; 
+            padding: 15px; 
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.3); /* Adjusted shadow for dark theme */
+        }
+        .tv-card h3 { 
+            margin-top: 0; 
+            color: #eeeeee; /* Light color for card headings */
+        }
+        .tv-card p { 
+            margin-bottom: 5px; 
+            color: #cccccc; /* Lighter gray for card text */
+        }
+        .tv-card .status-label { 
+            font-weight: bold; 
+            color: #d0d0d0; /* Ensure labels are also light */
+        }
+        .tv-card .timestamp { 
+            font-size: 0.8em; 
+            color: #aaaaaa; /* Light gray for timestamps */
+        }
+        .error { 
+            color: #ff6b6b; /* Brighter red for errors on dark background */
+        }
+        a#backToManager { 
+            display: inline-block; 
+            margin-bottom:20px; 
+            padding: 10px 15px; 
+            background-color: #0056b3; /* Slightly adjusted blue, or a gray like #555 */
+            color: white; 
+            text-decoration: none; 
+            border-radius: 5px;
+        }
+        a#backToManager:hover {
+            background-color: #004494; /* Darker shade on hover */
+        }
+        .tv-card img.thumbnail {
+            width: 100px; /* or max-width: 100%; */
+            height: auto;
+            border: 1px solid #444; /* Darker border for dark theme */
+            margin-top: 10px;
+            display: block; /* To allow margin-top to work as expected and center if needed */
+        }
+    </style>
+</head>
+<body>
+    <h1>TV Dashboard</h1>
+    <a href="manager.html" id="backToManager">Back to Manager</a>
+    <div id="dashboard-container">
+        <p>Loading dashboard...</p>
+    </div>
+
+    <script>
+        const dbUrl = 'http://192.168.1.215:5984/slideshows'; // IMPORTANT: Placeholder URL
+
+        const dashboardContainer = document.getElementById('dashboard-container');
+
+        async function fetchTvConfigs() {
+            try {
+                const response = await fetch(`${dbUrl}/_all_docs?include_docs=true`);
+                if (!response.ok) {
+                    throw new Error(`Error fetching TV configs: ${response.status} ${response.statusText}`);
+                }
+                const allDocs = await response.json();
+                // Filter for actual TV config documents
+                return allDocs.rows
+                    .map(row => row.doc)
+                    .filter(doc => doc && doc.name && !doc._id.startsWith('_design/') && !doc._id.startsWith('status_'));
+            } catch (error) {
+                console.error('Failed to fetch TV configs:', error);
+                dashboardContainer.innerHTML = '<p class="error">Error loading TV configurations.</p>';
+                return [];
+            }
+        }
+
+        async function fetchTvStatus(tvId) {
+            const statusDocId = `status_${tvId}`;
+            try {
+                const response = await fetch(`${dbUrl}/${statusDocId}`);
+                if (response.status === 404) {
+                    return { current_slide_filename: 'N/A (no status)', timestamp: 'N/A' };
+                }
+                if (!response.ok) {
+                    console.warn(`Warning fetching status for ${tvId}: ${response.status}`);
+                    return { current_slide_filename: 'N/A (status error)', timestamp: 'Error' };
+                }
+                return await response.json();
+            } catch (error) {
+                console.warn(`Error fetching status for ${tvId}:`, error);
+                return { current_slide_filename: 'N/A (fetch error)', timestamp: 'Error' };
+            }
+        }
+
+        function formatTimestamp(isoString) {
+             if (!isoString || isoString === 'N/A' || isoString === 'Error') return isoString;
+             try {
+                 return new Date(isoString).toLocaleString();
+             } catch (e) {
+                 return isoString; // Return original if parsing fails
+             }
+        }
+
+        async function renderDashboard() {
+            const tvConfigs = await fetchTvConfigs();
+            if (tvConfigs.length === 0 && !dashboardContainer.querySelector('.error')) {
+                dashboardContainer.innerHTML = '<p>No TVs configured or found.</p>';
+                return;
+            } else if (tvConfigs.length === 0 && dashboardContainer.querySelector('.error')) {
+                // Error message already shown by fetchTvConfigs
+                return;
+            }
+
+            dashboardContainer.innerHTML = ''; // Clear previous content or "Loading..."
+
+            for (const tv of tvConfigs) {
+                const status = await fetchTvStatus(tv._id);
+                const tvCard = document.createElement('div');
+                tvCard.className = 'tv-card';
+                tvCard.id = 'tv-card-' + tv._id; // Assign unique ID to the card
+
+                let thumbnailHtml = '';
+                if (status.current_slide_filename && status.current_slide_filename !== 'N/A (no status)' && status.current_slide_filename !== 'N/A (status error)' && status.current_slide_filename !== 'N/A (fetch error)') {
+                    const thumbnailUrl = `${dbUrl}/${tv._id}/${status.current_slide_filename}`;
+                    thumbnailHtml = `<img src="${thumbnailUrl}" alt="Current slide" class="thumbnail">`;
+                }
+
+                tvCard.innerHTML = `
+                    <h3>${tv.name || tv._id}</h3>
+                    <p><span class="status-label">Current Slide:</span> <span class="current-slide-text">${status.current_slide_filename || 'Unknown'}</span></p>
+                    <p class="timestamp"><span class="status-label">Last Update:</span> <span class="timestamp-text">${formatTimestamp(status.timestamp)}</span></p>
+                    <p><span class="status-label">TV ID:</span> ${tv._id}</p>
+                    ${thumbnailHtml}
+                `;
+                dashboardContainer.appendChild(tvCard);
+            }
+        }
+
+        async function listenForStatusChanges(since = 'now') {
+            try {
+                const response = await fetch(`${dbUrl}/_changes?feed=longpoll&include_docs=true&since=${since}&heartbeat=10000`);
+                if (!response.ok) {
+                    console.error('Error connecting to _changes feed:', response.status, response.statusText);
+                    // Optional: Implement a backoff strategy before retrying
+                    setTimeout(() => listenForStatusChanges(since), 5000); // Retry after 5 seconds
+                    return;
+                }
+                const changes = await response.json();
+                
+                changes.results.forEach(change => {
+                    if (change.id && change.id.startsWith('status_') && change.doc) {
+                        const tvId = change.doc.tv_uuid;
+                        const cardToUpdate = document.getElementById('tv-card-' + tvId);
+
+                        if (cardToUpdate) {
+                            const slideTextElement = cardToUpdate.querySelector('.current-slide-text');
+                            if (slideTextElement) {
+                                slideTextElement.textContent = change.doc.current_slide_filename || 'Unknown';
+                            }
+
+                            const timestampElement = cardToUpdate.querySelector('.timestamp-text');
+                            if (timestampElement) {
+                                timestampElement.textContent = formatTimestamp(change.doc.timestamp);
+                            }
+
+                            // Update thumbnail
+                            let existingThumbnail = cardToUpdate.querySelector('img.thumbnail');
+                            if (existingThumbnail) {
+                                existingThumbnail.remove();
+                            }
+
+                            if (change.doc.current_slide_filename && change.doc.current_slide_filename !== 'N/A (no status)' && change.doc.current_slide_filename !== 'N/A (status error)' && change.doc.current_slide_filename !== 'N/A (fetch error)') {
+                                const newThumbnailUrl = `${dbUrl}/${tvId}/${change.doc.current_slide_filename}`;
+                                const newImg = document.createElement('img');
+                                newImg.src = newThumbnailUrl;
+                                newImg.alt = "Current slide";
+                                newImg.className = 'thumbnail';
+                                // Insert after the TV ID paragraph, or at the end of the card
+                                const tvIdParagraph = cardToUpdate.querySelector('p:last-of-type'); 
+                                if (tvIdParagraph && tvIdParagraph.nextSibling) {
+                                    cardToUpdate.insertBefore(newImg, tvIdParagraph.nextSibling);
+                                } else {
+                                     cardToUpdate.appendChild(newImg);
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                listenForStatusChanges(changes.last_seq); // Listen for next batch of changes
+
+            } catch (error) {
+                console.error('Error in _changes feed processing or network error:', error);
+                // Optional: Implement a backoff strategy before retrying
+                setTimeout(() => listenForStatusChanges(since), 10000); // Retry after 10 seconds on error
+            }
+        }
+
+        // Initial load
+        renderDashboard();
+
+        // Start listening for real-time updates
+        listenForStatusChanges();
+
+        // Periodic refresh (e.g., every 15 seconds) - REMOVED
+        // setInterval(renderDashboard, 15000);
+    </script>
+</body>
+</html>
