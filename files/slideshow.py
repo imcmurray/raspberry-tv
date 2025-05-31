@@ -595,68 +595,172 @@ def process_text_overlay(image, text_params):
     """Process text overlay for any content type (legacy wrapper)"""
     return get_cached_text_surface(image, text_params, force_refresh=True)
 
-# Function to clean up unused attachments
+# Function to get referenced attachments from document
+def get_referenced_attachments(doc):
+    """Extract set of attachment names that are currently referenced"""
+    referenced_attachments = set()
+    for slide in doc.get('slides', []):
+        if slide.get('type') != 'website':
+            attachment_name = slide.get('name')
+            if attachment_name:
+                referenced_attachments.add(attachment_name)
+        else:
+            # For website slides, use the cached filename
+            url = slide.get('url')
+            if url in website_cache:
+                attachment_name = website_cache[url].get('filename')
+                if attachment_name:
+                    referenced_attachments.add(attachment_name)
+    return referenced_attachments
+
+# Function to perform immediate cleanup (called when slides change)
+def cleanup_unused_attachments_immediate():
+    """Immediate cleanup of unused attachments when slides are updated"""
+    try:
+        with cleanup_lock:
+            logger.info("Starting immediate attachment cleanup...")
+            
+            # Fetch current document
+            doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+            if doc_response.status_code != 200:
+                logger.warning(f"Failed to fetch document for immediate cleanup: {doc_response.status_code}")
+                return
+
+            doc = doc_response.json()
+            referenced_attachments = get_referenced_attachments(doc)
+            
+            # Get all attachments
+            attachments = doc.get('_attachments', {})
+            attachment_names = set(attachments.keys())
+            
+            # Find unused attachments
+            unused_attachments = list(attachment_names - referenced_attachments)
+            
+            if not unused_attachments:
+                logger.debug("No unused attachments found during immediate cleanup")
+                return
+            
+            logger.info(f"Found {len(unused_attachments)} unused attachments for immediate cleanup")
+            
+            # Delete unused attachments in batch (up to 5 at once to avoid overwhelming)
+            batch_size = min(5, len(unused_attachments))
+            for i in range(0, len(unused_attachments), batch_size):
+                batch = unused_attachments[i:i + batch_size]
+                _delete_attachment_batch(batch)
+                
+    except Exception as e:
+        logger.error(f"Error during immediate attachment cleanup: {e}")
+
+# Function to delete a batch of attachments efficiently
+def _delete_attachment_batch(attachment_names):
+    """Delete a batch of attachments efficiently"""
+    if not attachment_names:
+        return
+    
+    try:
+        # Get fresh document revision for batch
+        doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+        if doc_response.status_code != 200:
+            logger.error(f"Failed to get document for batch deletion: {doc_response.status_code}")
+            return
+        
+        doc = doc_response.json()
+        current_rev = doc.get('_rev')
+        
+        # Delete attachments in this batch
+        deleted_count = 0
+        for attachment_name in attachment_names:
+            try:
+                delete_url = f"{couchdb_url}/slideshows/{tv_uuid}/{attachment_name}?rev={current_rev}"
+                delete_response = requests.delete(delete_url, timeout=10)
+                
+                if delete_response.status_code in [200, 202]:
+                    logger.info(f"Successfully deleted unused attachment: {attachment_name}")
+                    deleted_count += 1
+                    # Update revision for next deletion in batch
+                    current_rev = delete_response.json().get('rev', current_rev)
+                else:
+                    logger.warning(f"Failed to delete attachment {attachment_name}: {delete_response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Error deleting attachment {attachment_name}: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"Batch deletion completed: {deleted_count}/{len(attachment_names)} attachments deleted")
+            
+    except Exception as e:
+        logger.error(f"Error during batch attachment deletion: {e}")
+
+# Function to clean up unused attachments (periodic background task)
 def cleanup_unused_attachments():
-    """Delete attachments not referenced by the current slideshow document"""
+    """Periodic cleanup of all unused attachments"""
     while True:
         try:
             with cleanup_lock:
+                logger.info("Starting periodic attachment cleanup...")
+                
                 # Fetch the current slideshow document
                 doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
                 if doc_response.status_code != 200:
                     logger.error(f"Failed to fetch slideshow document for cleanup: {doc_response.status_code}")
-                    time.sleep(3600)  # Retry after 1 hour
+                    time.sleep(900)  # Retry after 15 minutes
                     continue
 
                 doc = doc_response.json()
-                # Get referenced attachment names
-                referenced_attachments = set()
-                for slide in doc.get('slides', []):
-                    if slide.get('type') != 'website':
-                        attachment_name = slide.get('name')
-                        if attachment_name:
-                            referenced_attachments.add(attachment_name)
-                    else:
-                        # For website slides, use the cached filename
-                        url = slide.get('url')
-                        if url in website_cache:
-                            attachment_name = website_cache[url].get('filename')
-                            if attachment_name:
-                                referenced_attachments.add(attachment_name)
-
+                referenced_attachments = get_referenced_attachments(doc)
+                
                 # Get all attachments in the document
                 attachments = doc.get('_attachments', {})
                 attachment_names = set(attachments.keys())
 
                 # Identify unused attachments
-                unused_attachments = attachment_names - referenced_attachments
-
-                # Delete unused attachments
-                for attachment_name in unused_attachments:
-                    try:
-                        current_rev = doc.get('_rev')
-                        delete_url = f"{couchdb_url}/slideshows/{tv_uuid}/{attachment_name}?rev={current_rev}"
-                        delete_response = requests.delete(delete_url, timeout=10)
-                        if delete_response.status_code in [200, 202]:
-                            logger.info(f"Successfully deleted unused attachment: {attachment_name}")
-                            # Update document revision
-                            doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
-                            if doc_response.status_code == 200:
-                                doc = doc_response.json()
-                            else:
-                                logger.error(f"Failed to refresh document after deletion: {doc_response.status_code}")
-                                break
-                        else:
-                            logger.error(f"Failed to delete attachment {attachment_name}: {delete_response.status_code}")
-                    except Exception as e:
-                        logger.error(f"Error deleting attachment {attachment_name}: {e}")
+                unused_attachments = list(attachment_names - referenced_attachments)
+                
+                if not unused_attachments:
+                    logger.debug("No unused attachments found during periodic cleanup")
+                else:
+                    logger.info(f"Found {len(unused_attachments)} unused attachments for periodic cleanup")
+                    
+                    # Sort by size (delete larger files first to free more space)
+                    def get_attachment_size(name):
+                        return attachments.get(name, {}).get('length', 0)
+                    
+                    unused_attachments.sort(key=get_attachment_size, reverse=True)
+                    
+                    # Delete all unused attachments in batches
+                    batch_size = 10  # Larger batches for periodic cleanup
+                    total_deleted = 0
+                    
+                    for i in range(0, len(unused_attachments), batch_size):
+                        batch = unused_attachments[i:i + batch_size]
+                        batch_start_count = total_deleted
+                        _delete_attachment_batch(batch)
+                        # Assume successful deletion for counting (logged in batch function)
+                        total_deleted += len(batch)
+                        
+                        # Brief pause between batches to avoid overwhelming CouchDB
+                        if i + batch_size < len(unused_attachments):
+                            time.sleep(1)
+                    
+                    logger.info(f"Periodic cleanup completed: processed {len(unused_attachments)} unused attachments")
 
         except Exception as e:
-            logger.error(f"Error during attachment cleanup: {e}")
-        time.sleep(3600)  # Run every 1 hour
+            logger.error(f"Error during periodic attachment cleanup: {e}")
+        
+        # Run every 15 minutes instead of 1 hour
+        time.sleep(900)  # 15 minutes = 900 seconds
 
 # Start attachment cleanup thread
 threading.Thread(target=cleanup_unused_attachments, daemon=True).start()
+
+# Perform initial cleanup on startup (after a brief delay to let system stabilize)
+def startup_cleanup():
+    """Perform cleanup on system startup"""
+    time.sleep(30)  # Wait 30 seconds for system to stabilize
+    logger.info("Performing startup attachment cleanup...")
+    cleanup_unused_attachments_immediate()
+
+threading.Thread(target=startup_cleanup, daemon=True).start()
 
 # Background thread for website capture
 def website_capture_worker():
@@ -929,6 +1033,8 @@ while True:
             if doc:
                 slides = process_slides_from_doc(doc)
                 if slides:
+                    # Trigger immediate cleanup of unused attachments
+                    cleanup_unused_attachments_immediate()
                     state = "slideshow"
                     current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
@@ -953,6 +1059,8 @@ while True:
             if doc:
                 slides = process_slides_from_doc(doc)
                 if slides:
+                    # Trigger immediate cleanup of unused attachments
+                    cleanup_unused_attachments_immediate()
                     state = "slideshow"
                     current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
@@ -978,6 +1086,8 @@ while True:
                             if new_slides:
                                 cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 # Resume from current slide index, or last valid index
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
@@ -1080,6 +1190,8 @@ while True:
                             if new_slides:
                                 cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
                                 slide_data = slides[slide_index]
@@ -1101,6 +1213,8 @@ while True:
                             if new_slides:
                                 cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
                                 slide_data = slides[slide_index]
