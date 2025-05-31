@@ -20,6 +20,14 @@
     owner: "{{ service_user }}"
     group: "{{ service_group }}"
 
+- name: Deploy pygame diagnostic script
+  copy:
+    src: pygame_diagnostic.py
+    dest: /usr/local/bin/pygame_diagnostic.py
+    mode: 0755
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+
 - name: Create slideshow log file with proper permissions
   file:
     path: /var/log/slideshow.log

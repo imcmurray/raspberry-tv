@@ -67,6 +67,44 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 
 ## Issue Tracking & Known Solutions
 
+### Issue #8: Display Driver Initialization Failures (IN PROGRESS)
+
+**Problem**: Pygame fails to initialize any display drivers on Ubuntu Raspberry Pi systems, with all drivers (kmsdrm, fbcon, directfb) reporting "not available".
+
+**Symptoms**:
+- All pygame display drivers fail with "not available" errors
+- DRM devices and framebuffers exist but are not accessible to pygame
+- System shows proper hardware detection but pygame cannot use drivers
+
+**Root Cause**: 
+- Pygame compiled without proper SDL2 video driver support
+- Missing SDL2 development packages for hardware-specific drivers
+- Potential permissions or runtime library issues
+
+**Solution Implemented**:
+1. **Enhanced Package Installation** (Ansible):
+   - Added missing SDL2 development packages: `libkms1`, `libdrm-dev`, `libgbm-dev`, `libegl1-mesa-dev`, `libgles2-mesa-dev`
+   - Added keyboard support package: `kbd`
+
+2. **Pygame Rebuild with Native Compilation**:
+   - Force rebuild pygame from source with `--no-binary=pygame`
+   - Set proper environment variables for SDL2 library detection
+   - Clear pip cache to ensure clean rebuild
+
+3. **Diagnostic and Fallback System** in `slideshow.py`:
+   - Created comprehensive diagnostic script (`pygame_diagnostic.py`)
+   - Added dummy driver fallback for logging/debugging when hardware fails
+   - Implemented safe display update function for graceful dummy mode handling
+   - Enhanced error reporting with automatic diagnostic execution
+
+4. **Testing Infrastructure**: 
+   - Deployed diagnostic script via Ansible for on-device troubleshooting
+   - Added comprehensive system, package, and driver capability checking
+
+**Status**: 🔄 **IN PROGRESS** - Enhanced driver support and diagnostics implemented, awaiting deployment testing
+
+**Testing**: Deploy updated Ansible playbook and run diagnostic script on affected Pi to verify fixes.
+
 ### Issue #2: Chrome Driver Session Management (RESOLVED)
 
 **Problem**: Chrome driver session management issues when capturing website screenshots, particularly evident during testing on Arch Linux systems.
@@ -111,3 +149,7 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 - All image content is resized to HD resolution before storage
 - Web interfaces require CouchDB CORS configuration for cross-origin requests
 - **Arch Linux users**: Ensure Chromium, chromedriver, and python-selenium are installed before running slideshow
+
+## Memories
+
+- X11 should never be picked as an option for this project

@@ -343,10 +343,10 @@ for attempt, config in enumerate(display_drivers_to_try):
         # Test display briefly
         early_logger.info("Testing display output...")
         screen.fill((0, 255, 0))  # Green for success
-        pygame.display.flip()
+        safe_display_flip()
         time.sleep(1)
         screen.fill((0, 0, 0))    # Black
-        pygame.display.flip()
+        safe_display_flip()
         early_logger.info(f"Display test completed successfully with {driver}")
         
         break  # Success! Exit the retry loop
@@ -359,14 +359,53 @@ for attempt, config in enumerate(display_drivers_to_try):
 
 if screen is None:
     early_logger.error("CRITICAL: Failed to create display with any driver!")
-    early_logger.error("All display methods failed. Slideshow cannot start.")
-    # Set a default screen size and continue (will likely crash later)
-    screen_width, screen_height = 1920, 1080
+    early_logger.error("All display methods failed. Running pygame diagnostic...")
+    
+    # Run the diagnostic script to help troubleshoot
+    try:
+        import subprocess
+        result = subprocess.run(['/usr/local/bin/pygame_diagnostic.py'], 
+                              capture_output=True, text=True, timeout=60)
+        early_logger.info("Pygame diagnostic output:")
+        early_logger.info(result.stdout)
+        if result.stderr:
+            early_logger.error("Pygame diagnostic errors:")
+            early_logger.error(result.stderr)
+    except Exception as e:
+        early_logger.warning(f"Could not run pygame diagnostic: {e}")
+    
+    # Try one final fallback with dummy driver for logging/debugging
+    early_logger.info("Attempting final fallback with dummy driver for debugging...")
+    try:
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        pygame.quit()
+        pygame.init()
+        screen = pygame.display.set_mode((1920, 1080))
+        screen_width, screen_height = 1920, 1080
+        early_logger.warning("Running in DUMMY MODE - no display output will be visible!")
+        early_logger.warning("Check system packages and permissions using: /usr/local/bin/pygame_diagnostic.py")
+        successful_driver = 'dummy'
+    except Exception as e:
+        early_logger.error(f"Even dummy driver failed: {e}")
+        early_logger.error("Slideshow cannot start. Please check pygame installation and drivers.")
+        sys.exit(1)
 else:
     early_logger.info(f"Final display configuration: {successful_driver} driver, {screen_width}x{screen_height}")
     early_logger.info(f"Final SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER')}")
     early_logger.info(f"Final SDL_FBDEV: {os.environ.get('SDL_FBDEV', 'not set')}")
     early_logger.info(f"Final DISPLAY: {os.environ.get('DISPLAY', 'not set')}")
+
+# Helper function for safe display updates
+def safe_display_flip():
+    """Safely update display, handling dummy mode gracefully"""
+    try:
+        if successful_driver != 'dummy':
+            safe_display_flip()
+        else:
+            # In dummy mode, just sleep briefly to simulate display update
+            time.sleep(0.01)
+    except Exception as e:
+        logger.warning(f"Display flip failed: {e}")
 
 # State variables
 state = "connecting"
@@ -1326,7 +1365,7 @@ while True:
         text = font.render("Connecting to server...", True, (255, 255, 255))
         text_rect = text.get_rect(center=(screen_width / 2, screen_height / 2))
         screen.blit(text, text_rect)
-        pygame.display.flip()
+        safe_display_flip()
         doc = fetch_document()
         if doc is not None:
             if doc:
@@ -1351,7 +1390,7 @@ while True:
         text = font.render(message, True, (255, 255, 255))
         text_rect = text.get_rect(center=(screen_width / 2, screen_height / 2))
         screen.blit(text, text_rect)
-        pygame.display.flip()
+        safe_display_flip()
         if need_refetch.is_set():
             need_refetch.clear()
             doc = fetch_document()
@@ -1436,7 +1475,7 @@ while True:
                                 text_rect = slide_data.get('text_rect')
                             if text_surface and text_rect:
                                 screen.blit(text_surface, (center_x + text_rect.left, center_y + text_rect.top))
-                        pygame.display.flip()
+                        safe_display_flip()
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
                             pygame.quit()
@@ -1479,7 +1518,7 @@ while True:
                         slide_render_surface.set_alpha(alpha_value)
                         screen.fill((0,0,0))
                         screen.blit(slide_render_surface, (center_x, center_y))
-                        pygame.display.flip()
+                        safe_display_flip()
                         time.sleep(delay_per_step)
                     if need_refetch.is_set():
                         need_refetch.clear()
@@ -1575,7 +1614,7 @@ while True:
                                 screen.blit(text_surface, (int(scroll_x), center_y + original_text_rect.top))
                             else:
                                 screen.blit(text_surface, (center_x + original_text_rect.left, center_y + original_text_rect.top))
-                    pygame.display.flip()
+                    safe_display_flip()
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
                             pygame.quit()

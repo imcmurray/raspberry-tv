@@ -71,6 +71,14 @@
       - libsdl2-image-2.0-0
       - libsdl2-mixer-2.0-0
       - libsdl2-ttf-2.0-0
+      # Additional SDL2 video drivers for hardware output
+      - libkms1
+      - libdrm-dev
+      - libgbm-dev
+      - libegl1-mesa-dev
+      - libgles2-mesa-dev
+      # Framebuffer support
+      - kbd
     state: present
     update_cache: yes
   when: target_os == "ubuntu"
@@ -158,11 +166,19 @@
         virtualenv: "{{ venv_path }}"
       ignore_errors: yes
     
+    - name: Clear pip cache
+      shell: "{{ venv_path }}/bin/pip cache purge"
+      ignore_errors: yes
+    
     - name: Install pygame with proper SDL2 libraries
       pip:
         name: pygame
         virtualenv: "{{ venv_path }}"
-        extra_args: "--force-reinstall --no-cache-dir"
+        extra_args: "--force-reinstall --no-cache-dir --no-binary=pygame"
+      environment:
+        # Ensure pygame uses system SDL2 libraries
+        SDL_CONFIG: "/usr/bin/sdl2-config"
+        PKG_CONFIG_PATH: "/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig"
   when: target_os == "ubuntu"
 
 - name: Install pygame normally for Raspberry Pi OS
