@@ -1,6 +1,2 @@
 - name: reboot
   reboot:
-
-- name: update grub
-  shell: update-grub
-  become: yes

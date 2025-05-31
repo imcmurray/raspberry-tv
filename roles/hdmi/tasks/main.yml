@@ -20,13 +20,6 @@
         fi
       become: yes
     
-    - name: Enable framebuffer console
-      lineinfile:
-        path: /etc/default/grub
-        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
-        line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"'
-        backup: yes
-      notify: update grub
   when: target_os == "ubuntu"
 
 - name: Check for config.txt location
