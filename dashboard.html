@@ -58,11 +58,85 @@
             background-color: #004494; /* Darker shade on hover */
         }
         .tv-card img.thumbnail {
-            width: 100px; /* or max-width: 100%; */
+            width: 250px;
             height: auto;
-            border: 1px solid #444; /* Darker border for dark theme */
-            margin-top: 10px;
-            display: block; /* To allow margin-top to work as expected and center if needed */
+            border: 1px solid #444;
+            margin: 10px auto;
+            display: block;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: transform 0.2s ease;
+        }
+        .tv-card img.thumbnail:hover {
+            transform: scale(1.05);
+        }
+        .content-type-badge { 
+            position: absolute; 
+            top: 5px; 
+            left: 5px; 
+            background: rgba(0,0,0,0.7); 
+            color: white; 
+            padding: 2px 6px; 
+            border-radius: 3px; 
+            font-size: 10px; 
+            text-transform: uppercase;
+            z-index: 10;
+        }
+        .content-type-badge.image { background: rgba(76, 175, 80, 0.8); }
+        .content-type-badge.video { background: rgba(244, 67, 54, 0.8); }
+        .content-type-badge.website { background: rgba(33, 150, 243, 0.8); }
+        .slide-sequence-badge {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            z-index: 10;
+        }
+        .slide-info {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+            font-size: 0.8em;
+            color: #999;
+        }
+        .thumbnail-container {
+            position: relative;
+            display: inline-block;
+            width: 250px;
+            margin: 10px auto;
+        }
+        #modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #modal img {
+            max-width: 90vw;
+            max-height: 90vh;
+            border-radius: 5px;
+        }
+        #modal-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
         }
     </style>
 </head>
@@ -71,6 +145,12 @@
     <a href="manager.html" id="backToManager">Back to Manager</a>
     <div id="dashboard-container">
         <p>Loading dashboard...</p>
+    </div>
+    
+    <!-- Modal for expanded thumbnail view -->
+    <div id="modal" onclick="closeModal()">
+        <button id="modal-close" onclick="closeModal()">×</button>
+        <img id="modal-image" src="" alt="Expanded slide view">
     </div>
 
     <script>
@@ -139,12 +219,31 @@
                 const status = await fetchTvStatus(tv._id);
                 const tvCard = document.createElement('div');
                 tvCard.className = 'tv-card';
-                tvCard.id = 'tv-card-' + tv._id; // Assign unique ID to the card
+                tvCard.id = 'tv-card-' + tv._id;
 
+                // Get slide info from TV config
+                const slides = tv.slides || [];
+                const currentSlideIndex = slides.findIndex(slide => slide.name === status.current_slide_filename);
+                const currentSlide = currentSlideIndex >= 0 ? slides[currentSlideIndex] : null;
+                
                 let thumbnailHtml = '';
                 if (status.current_slide_filename && status.current_slide_filename !== 'N/A (no status)' && status.current_slide_filename !== 'N/A (status error)' && status.current_slide_filename !== 'N/A (fetch error)') {
                     const thumbnailUrl = `${dbUrl}/${tv._id}/${status.current_slide_filename}`;
-                    thumbnailHtml = `<img src="${thumbnailUrl}" alt="Current slide" class="thumbnail">`;
+                    const slideType = currentSlide ? currentSlide.type || 'image' : 'image';
+                    const duration = currentSlide ? currentSlide.duration || 10 : 10;
+                    const sequenceBadge = currentSlideIndex >= 0 ? `${currentSlideIndex + 1}/${slides.length}` : '?/?';
+                    
+                    thumbnailHtml = `
+                        <div class="thumbnail-container">
+                            <img src="${thumbnailUrl}" alt="Current slide" class="thumbnail" onclick="openModal('${thumbnailUrl}')">
+                            <div class="content-type-badge ${slideType}">${slideType}</div>
+                            <div class="slide-sequence-badge">${sequenceBadge}</div>
+                        </div>
+                        <div class="slide-info">
+                            <span>Duration: ${duration}s</span>
+                            <span>Type: ${slideType}</span>
+                        </div>
+                    `;
                 }
 
                 tvCard.innerHTML = `
@@ -185,25 +284,41 @@
                                 timestampElement.textContent = formatTimestamp(change.doc.timestamp);
                             }
 
-                            // Update thumbnail
-                            let existingThumbnail = cardToUpdate.querySelector('img.thumbnail');
-                            if (existingThumbnail) {
-                                existingThumbnail.remove();
-                            }
+                            // Update thumbnail and slide info
+                            let existingContainer = cardToUpdate.querySelector('.thumbnail-container');
+                            let existingSlideInfo = cardToUpdate.querySelector('.slide-info');
+                            if (existingContainer) existingContainer.remove();
+                            if (existingSlideInfo) existingSlideInfo.remove();
 
                             if (change.doc.current_slide_filename && change.doc.current_slide_filename !== 'N/A (no status)' && change.doc.current_slide_filename !== 'N/A (status error)' && change.doc.current_slide_filename !== 'N/A (fetch error)') {
-                                const newThumbnailUrl = `${dbUrl}/${tvId}/${change.doc.current_slide_filename}`;
-                                const newImg = document.createElement('img');
-                                newImg.src = newThumbnailUrl;
-                                newImg.alt = "Current slide";
-                                newImg.className = 'thumbnail';
-                                // Insert after the TV ID paragraph, or at the end of the card
-                                const tvIdParagraph = cardToUpdate.querySelector('p:last-of-type'); 
-                                if (tvIdParagraph && tvIdParagraph.nextSibling) {
-                                    cardToUpdate.insertBefore(newImg, tvIdParagraph.nextSibling);
-                                } else {
-                                     cardToUpdate.appendChild(newImg);
-                                }
+                                // Get TV config to find slide info
+                                fetch(`${dbUrl}/${tvId}`).then(res => res.json()).then(tvDoc => {
+                                    const slides = tvDoc.slides || [];
+                                    const currentSlideIndex = slides.findIndex(slide => slide.name === change.doc.current_slide_filename);
+                                    const currentSlide = currentSlideIndex >= 0 ? slides[currentSlideIndex] : null;
+                                    const slideType = currentSlide ? currentSlide.type || 'image' : 'image';
+                                    const duration = currentSlide ? currentSlide.duration || 10 : 10;
+                                    const sequenceBadge = currentSlideIndex >= 0 ? `${currentSlideIndex + 1}/${slides.length}` : '?/?';
+                                    
+                                    const newThumbnailUrl = `${dbUrl}/${tvId}/${change.doc.current_slide_filename}`;
+                                    const thumbnailContainer = document.createElement('div');
+                                    thumbnailContainer.className = 'thumbnail-container';
+                                    thumbnailContainer.innerHTML = `
+                                        <img src="${newThumbnailUrl}" alt="Current slide" class="thumbnail" onclick="openModal('${newThumbnailUrl}')">
+                                        <div class="content-type-badge ${slideType}">${slideType}</div>
+                                        <div class="slide-sequence-badge">${sequenceBadge}</div>
+                                    `;
+                                    
+                                    const slideInfo = document.createElement('div');
+                                    slideInfo.className = 'slide-info';
+                                    slideInfo.innerHTML = `
+                                        <span>Duration: ${duration}s</span>
+                                        <span>Type: ${slideType}</span>
+                                    `;
+                                    
+                                    cardToUpdate.appendChild(thumbnailContainer);
+                                    cardToUpdate.appendChild(slideInfo);
+                                }).catch(err => console.warn('Error fetching slide info:', err));
                             }
                         }
                     }
@@ -223,6 +338,23 @@
 
         // Start listening for real-time updates
         listenForStatusChanges();
+
+        // Modal functions
+        function openModal(imageSrc) {
+            const modal = document.getElementById('modal');
+            const modalImage = document.getElementById('modal-image');
+            modalImage.src = imageSrc;
+            modal.style.display = 'flex';
+        }
+        
+        function closeModal() {
+            document.getElementById('modal').style.display = 'none';
+        }
+        
+        // Prevent modal from closing when clicking on the image
+        document.getElementById('modal-image').addEventListener('click', function(e) {
+            e.stopPropagation();
+        });
 
         // Periodic refresh (e.g., every 15 seconds) - REMOVED
         // setInterval(renderDashboard, 15000);
