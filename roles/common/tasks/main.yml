@@ -52,7 +52,8 @@
 - name: Install OpenGL libraries for OpenCV (Ubuntu)
   apt:
     name:
-      - libgl1-mesa-glx
+      - libgl1
+      - libglx-mesa0
       - libglib2.0-0
     state: present
   when: target_os == "ubuntu"
