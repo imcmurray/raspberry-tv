@@ -4,3 +4,7 @@ manager_url: http://couchdb.utb.circ10.dcn:8000
 office_start_time: "08:00"
 office_end_time: "17:30"
 time_zone: America/Boise
+
+# Virtual environment configuration
+venv_path: /opt/slideshow/venv
+venv_python: /opt/slideshow/venv/bin/python

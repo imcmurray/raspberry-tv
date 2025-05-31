@@ -3,7 +3,7 @@ Description=HDMI Sleep Control
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/bin/hdmi_sleep.py
+ExecStart={{ venv_python }} /usr/local/bin/hdmi_sleep.py
 Restart=always
 User=pi
 

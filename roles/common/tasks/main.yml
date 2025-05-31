@@ -6,9 +6,11 @@
   apt:
     upgrade: safe
 
-- name: Install pip
+- name: Install pip and venv
   apt:
-    name: python3-pip
+    name:
+      - python3-pip
+      - python3-venv
     state: present
 
 - name: Install Chromium browser
@@ -21,7 +23,18 @@
     name: chromium-chromedriver
     state: present
 
-- name: Install Python libraries
+- name: Create virtual environment directory
+  file:
+    path: /opt/slideshow
+    state: directory
+    mode: 0755
+
+- name: Create Python virtual environment
+  command: python3 -m venv {{ venv_path }}
+  args:
+    creates: "{{ venv_path }}/bin/python"
+
+- name: Install Python libraries in virtual environment
   pip:
     name:
       - pygame
@@ -31,4 +44,4 @@
       - selenium
       - Pillow
       - urllib3
-    executable: pip3
+    virtualenv: "{{ venv_path }}"

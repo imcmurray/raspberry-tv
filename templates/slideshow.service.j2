@@ -3,7 +3,7 @@ Description=Slideshow Display
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/bin/slideshow.py
+ExecStart={{ venv_python }} /usr/local/bin/slideshow.py
 Restart=always
 User=pi
 
