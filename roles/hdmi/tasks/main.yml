@@ -1,7 +1,33 @@
-- name: Skip HDMI configuration on non-Raspberry Pi OS
-  debug:
-    msg: "Skipping Raspberry Pi specific HDMI configuration on {{ target_os }}"
-  when: target_os != "raspios"
+- name: Configure Ubuntu dual HDMI setup
+  block:
+    - name: Add user to video group for framebuffer access
+      user:
+        name: "{{ service_user }}"
+        groups: video
+        append: yes
+    
+    - name: Create framebuffer devices if they don't exist
+      shell: |
+        if [ ! -e /dev/fb0 ]; then
+          mknod /dev/fb0 c 29 0
+          chgrp video /dev/fb0
+          chmod 664 /dev/fb0
+        fi
+        if [ ! -e /dev/fb1 ]; then
+          mknod /dev/fb1 c 29 32
+          chgrp video /dev/fb1
+          chmod 664 /dev/fb1
+        fi
+      become: yes
+    
+    - name: Enable framebuffer console
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+        line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"'
+        backup: yes
+      notify: update grub
+  when: target_os == "ubuntu"
 
 - name: Check for config.txt location
   stat:

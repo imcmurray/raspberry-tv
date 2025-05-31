@@ -43,41 +43,65 @@ def is_ubuntu():
 # Global variable for Xvfb process
 xvfb_proc = None
 
+# Function to check if framebuffer exists and is accessible
+def check_framebuffer(fb_path):
+    """Check if framebuffer device exists and is accessible"""
+    try:
+        return os.path.exists(fb_path) and os.access(fb_path, os.R_OK | os.W_OK)
+    except:
+        return False
+
 # Setup display environment based on OS
 if is_ubuntu():
-    # Ubuntu Server needs Xvfb virtual display
-    import subprocess
-    import atexit
-    
-    # Start Xvfb display server
-    xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
-                                stdout=subprocess.DEVNULL, 
-                                stderr=subprocess.DEVNULL)
-    os.putenv('DISPLAY', ':99')
-    os.putenv('SDL_VIDEODRIVER', 'x11')
-    
-    # Register cleanup function
-    def cleanup_xvfb():
-        global xvfb_proc
-        if xvfb_proc:
-            try:
-                xvfb_proc.terminate()
-                xvfb_proc.wait(timeout=5)
-            except:
+    # Ubuntu Server: Try framebuffer first, fallback to Xvfb
+    if check_framebuffer('/dev/fb1'):
+        # Use secondary framebuffer if available (dual HDMI setup)
+        logger.info("Using framebuffer /dev/fb1 for slideshow display")
+        os.putenv('SDL_FBDEV', '/dev/fb1')
+        os.putenv('SDL_VIDEODRIVER', 'fbcon')
+        os.putenv('SDL_NOMOUSE', '1')
+    elif check_framebuffer('/dev/fb0'):
+        # Use primary framebuffer if only one available
+        logger.info("Using framebuffer /dev/fb0 for slideshow display")
+        os.putenv('SDL_FBDEV', '/dev/fb0')
+        os.putenv('SDL_VIDEODRIVER', 'fbcon')
+        os.putenv('SDL_NOMOUSE', '1')
+    else:
+        # Fallback to Xvfb virtual display
+        logger.info("No accessible framebuffers found, using Xvfb virtual display")
+        import subprocess
+        import atexit
+        
+        # Start Xvfb display server
+        xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
+                                    stdout=subprocess.DEVNULL, 
+                                    stderr=subprocess.DEVNULL)
+        os.putenv('DISPLAY', ':99')
+        os.putenv('SDL_VIDEODRIVER', 'x11')
+        
+        # Register cleanup function
+        def cleanup_xvfb():
+            global xvfb_proc
+            if xvfb_proc:
                 try:
-                    xvfb_proc.kill()
+                    xvfb_proc.terminate()
+                    xvfb_proc.wait(timeout=5)
                 except:
-                    pass
-    
-    atexit.register(cleanup_xvfb)
-    signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
-    signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
-    
-    # Give Xvfb time to start
-    time.sleep(2)
+                    try:
+                        xvfb_proc.kill()
+                    except:
+                        pass
+        
+        atexit.register(cleanup_xvfb)
+        signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
+        signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
+        
+        # Give Xvfb time to start
+        time.sleep(2)
 else:
     # Raspberry Pi OS can use framebuffer
     # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
+    logger.info("Using framebuffer /dev/fb1 for slideshow display on Raspberry Pi OS")
     os.putenv('SDL_FBDEV', '/dev/fb1')
     os.putenv('SDL_VIDEODRIVER', 'fbcon')
     os.putenv('SDL_NOMOUSE', '1')
