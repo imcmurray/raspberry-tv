@@ -29,4 +29,6 @@
       - opencv-python
       - numpy
       - selenium
+      - Pillow
+      - urllib3
     executable: pip3
