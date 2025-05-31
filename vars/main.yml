@@ -8,3 +8,8 @@ time_zone: America/Boise
 # Virtual environment configuration
 venv_path: /opt/slideshow/venv
 venv_python: /opt/slideshow/venv/bin/python
+
+# OS-specific user configuration
+# These will be set by the common role based on detected OS
+service_user: "{{ 'pi' if ansible_distribution == 'Debian' else 'ubuntu' }}"
+service_group: "{{ 'pi' if ansible_distribution == 'Debian' else 'ubuntu' }}"

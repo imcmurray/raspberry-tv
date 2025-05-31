@@ -5,7 +5,7 @@ After=network.target
 [Service]
 ExecStart={{ venv_python }} /usr/local/bin/slideshow.py
 Restart=always
-User=pi
+User={{ service_user }}
 
 [Install]
 WantedBy=multi-user.target

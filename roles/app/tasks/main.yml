@@ -9,12 +9,16 @@
     src: slideshow.py
     dest: /usr/local/bin/slideshow.py
     mode: 0755
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
 
 - name: Deploy HDMI sleep script
   copy:
     src: hdmi_sleep.py
     dest: /usr/local/bin/hdmi_sleep.py
     mode: 0755
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
 
 - name: Deploy slideshow service
   template:
