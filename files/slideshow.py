@@ -364,7 +364,8 @@ if screen is None:
     # Run the diagnostic script to help troubleshoot
     try:
         import subprocess
-        result = subprocess.run(['/usr/local/bin/pygame_diagnostic.py'], 
+        # Use the same Python environment as the slideshow
+        result = subprocess.run([sys.executable, '/usr/local/bin/pygame_diagnostic.py'], 
                               capture_output=True, text=True, timeout=60)
         early_logger.info("Pygame diagnostic output:")
         early_logger.info(result.stdout)
@@ -400,7 +401,7 @@ def safe_display_flip():
     """Safely update display, handling dummy mode gracefully"""
     try:
         if successful_driver != 'dummy':
-            safe_display_flip()
+            pygame.display.flip()
         else:
             # In dummy mode, just sleep briefly to simulate display update
             time.sleep(0.01)

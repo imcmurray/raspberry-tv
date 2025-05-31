@@ -169,7 +169,18 @@
       shell: "{{ venv_path }}/bin/pip cache purge"
       ignore_errors: yes
     
-    - name: Install pygame with proper SDL2 libraries
+    - name: Install build dependencies for pygame compilation
+      apt:
+        name:
+          - build-essential
+          - python3-dev
+          - libfreetype6-dev
+          - libportmidi-dev
+          - libjpeg-dev
+          - libpng-dev
+        state: present
+    
+    - name: Install pygame with proper SDL2 libraries (from source)
       pip:
         name: pygame
         virtualenv: "{{ venv_path }}"
@@ -178,6 +189,24 @@
         # Ensure pygame uses system SDL2 libraries
         SDL_CONFIG: "/usr/bin/sdl2-config"
         PKG_CONFIG_PATH: "/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig"
+      register: pygame_source_install
+      ignore_errors: yes
+    
+    - name: Install pygame binary as fallback if source build failed
+      pip:
+        name: pygame
+        virtualenv: "{{ venv_path }}"
+        extra_args: "--force-reinstall --no-cache-dir"
+      when: pygame_source_install.failed
+    
+    - name: Verify pygame installation
+      shell: "{{ venv_path }}/bin/python -c 'import pygame; print(f\"Pygame {pygame.version.ver} installed successfully\")'"
+      register: pygame_verify
+      changed_when: false
+    
+    - name: Display pygame installation result
+      debug:
+        msg: "{{ pygame_verify.stdout }}"
   when: target_os == "ubuntu"
 
 - name: Install pygame normally for Raspberry Pi OS
