@@ -49,6 +49,14 @@
     name: chromium-chromedriver
     state: present
 
+- name: Install OpenGL libraries for OpenCV (Ubuntu)
+  apt:
+    name:
+      - libgl1-mesa-glx
+      - libglib2.0-0
+    state: present
+  when: target_os == "ubuntu"
+
 - name: Create virtual environment directory
   file:
     path: /opt/slideshow
