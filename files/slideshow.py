@@ -18,11 +18,23 @@ import hashlib
 import os
 import tempfile
 import sys
+import signal
 from PIL import Image
 from queue import Queue
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from contextlib import contextmanager
+
+# Handle systemd SIGHUP signal
+def signal_handler(signum, frame):
+    pass
+
+signal.signal(signal.SIGHUP, signal_handler)
+
+# Setup framebuffer environment for headless operation
+os.putenv('SDL_FBDEV', '/dev/fb0')
+os.putenv('SDL_VIDEODRIVER', 'fbcon')
+os.putenv('SDL_NOMOUSE', '1')
 
 # Define Configuration Path
 CONFIG_FILE_PATH = '/etc/slideshow.conf'
