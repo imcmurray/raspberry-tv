@@ -264,33 +264,126 @@ if os.environ.get('SDL_VIDEODRIVER') is None:
     early_logger.info(f"Emergency setup - SDL_FBDEV: {os.environ.get('SDL_FBDEV')}")
     early_logger.info(f"Emergency setup - DISPLAY: {os.environ.get('DISPLAY')}")
 
-try:
-    early_logger.info("Attempting to create fullscreen display...")
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    screen_width, screen_height = screen.get_size()
-    early_logger.info(f"Successfully created display: {screen_width}x{screen_height}")
+# Try multiple display drivers if the first one fails
+display_drivers_to_try = []
+
+if is_ubuntu():
+    # Ubuntu: Try in order of preference
+    display_drivers_to_try = [
+        {'driver': 'kmsdrm', 'fbdev': None},
+        {'driver': 'fbcon', 'fbdev': '/dev/fb1'},
+        {'driver': 'fbcon', 'fbdev': '/dev/fb0'},
+        {'driver': 'directfb', 'fbdev': None},
+        {'driver': 'x11', 'fbdev': None},  # Last resort with Xvfb
+    ]
+else:
+    # Raspberry Pi: Standard framebuffer approach
+    display_drivers_to_try = [
+        {'driver': 'fbcon', 'fbdev': '/dev/fb1'},
+        {'driver': 'fbcon', 'fbdev': '/dev/fb0'},
+        {'driver': 'kmsdrm', 'fbdev': None},
+    ]
+
+screen = None
+screen_width, screen_height = 1920, 1080
+successful_driver = None
+
+for attempt, config in enumerate(display_drivers_to_try):
+    driver = config['driver']
+    fbdev = config['fbdev']
     
-    # Test by filling screen with color briefly
-    early_logger.info("Testing display output with red screen...")
-    screen.fill((255, 0, 0))  # Red
-    pygame.display.flip()
-    time.sleep(2)
-    screen.fill((0, 255, 0))  # Green  
-    pygame.display.flip()
-    time.sleep(2)
-    screen.fill((0, 0, 255))  # Blue
-    pygame.display.flip()
-    time.sleep(2)
-    screen.fill((0, 0, 0))    # Black
-    pygame.display.flip()
-    early_logger.info("Display test completed")
+    early_logger.info(f"Attempt {attempt + 1}: Trying {driver} driver" + (f" with {fbdev}" if fbdev else ""))
     
-except Exception as e:
-    early_logger.error(f"Failed to create pygame display: {e}")
-    early_logger.error("This will likely cause the slideshow to fail")
-    # Continue anyway to see what happens
-    screen = None
+    # Set environment for this attempt
+    os.environ['SDL_VIDEODRIVER'] = driver
+    if fbdev:
+        os.environ['SDL_FBDEV'] = fbdev
+    elif 'SDL_FBDEV' in os.environ:
+        del os.environ['SDL_FBDEV']
+    
+    # Special setup for X11 (Xvfb fallback)
+    xvfb_proc = None
+    if driver == 'x11':
+        try:
+            early_logger.info("Starting Xvfb for X11 fallback...")
+            xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
+                                        stdout=subprocess.DEVNULL, 
+                                        stderr=subprocess.DEVNULL)
+            os.environ['DISPLAY'] = ':99'
+            time.sleep(3)  # Give Xvfb time to start
+            early_logger.info("Xvfb started successfully")
+        except Exception as e:
+            early_logger.error(f"Failed to start Xvfb: {e}")
+            continue
+    
+    try:
+        # Reinitialize pygame with new driver
+        pygame.quit()
+        pygame.init()
+        
+        early_logger.info(f"Attempting to create display with {driver}...")
+        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        screen_width, screen_height = screen.get_size()
+        early_logger.info(f"SUCCESS! Created display: {screen_width}x{screen_height} using {driver}")
+        successful_driver = driver
+        
+        # Test display briefly
+        early_logger.info("Testing display output...")
+        screen.fill((0, 255, 0))  # Green for success
+        pygame.display.flip()
+        time.sleep(1)
+        screen.fill((0, 0, 0))    # Black
+        pygame.display.flip()
+        early_logger.info(f"Display test completed successfully with {driver}")
+        
+        # Register Xvfb cleanup if we're using it
+        if xvfb_proc:
+            def cleanup_xvfb():
+                if xvfb_proc:
+                    try:
+                        xvfb_proc.terminate()
+                        xvfb_proc.wait(timeout=5)
+                        early_logger.info("Xvfb terminated successfully")
+                    except:
+                        try:
+                            xvfb_proc.kill()
+                            early_logger.warning("Xvfb killed forcefully")
+                        except:
+                            early_logger.error("Failed to kill Xvfb")
+            
+            atexit.register(cleanup_xvfb)
+            signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
+            signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
+        
+        break  # Success! Exit the retry loop
+        
+    except Exception as e:
+        early_logger.warning(f"Failed to create display with {driver}: {e}")
+        
+        # Clean up Xvfb if it was started
+        if xvfb_proc:
+            try:
+                xvfb_proc.terminate()
+                xvfb_proc.wait(timeout=2)
+            except:
+                try:
+                    xvfb_proc.kill()
+                except:
+                    pass
+        
+        # Continue to next driver
+        continue
+
+if screen is None:
+    early_logger.error("CRITICAL: Failed to create display with any driver!")
+    early_logger.error("All display methods failed. Slideshow cannot start.")
+    # Set a default screen size and continue (will likely crash later)
     screen_width, screen_height = 1920, 1080
+else:
+    early_logger.info(f"Final display configuration: {successful_driver} driver, {screen_width}x{screen_height}")
+    early_logger.info(f"Final SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER')}")
+    early_logger.info(f"Final SDL_FBDEV: {os.environ.get('SDL_FBDEV', 'not set')}")
+    early_logger.info(f"Final DISPLAY: {os.environ.get('DISPLAY', 'not set')}")
 
 # State variables
 state = "connecting"
