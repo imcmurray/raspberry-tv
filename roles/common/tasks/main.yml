@@ -58,10 +58,15 @@
     state: present
   when: target_os == "ubuntu"
 
-- name: Install Xvfb for virtual display (Ubuntu)
+- name: Install display drivers and tools (Ubuntu)
   apt:
     name:
       - xvfb
+      - libdrm2
+      - libkms1
+      - libgbm1
+      - fbset
+      - libdirectfb-1.7-7
     state: present
   when: target_os == "ubuntu"
 

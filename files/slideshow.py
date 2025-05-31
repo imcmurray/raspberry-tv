@@ -66,58 +66,94 @@ def check_framebuffer(fb_path):
         early_logger.error(f"Error checking framebuffer {fb_path}: {e}")
         return False
 
+# Function to setup framebuffer permissions and devices
+def setup_framebuffer_ubuntu():
+    """Setup framebuffer devices and permissions for Ubuntu"""
+    try:
+        import subprocess
+        # Ensure framebuffer devices exist and have proper permissions
+        for fb_num in [0, 1]:
+            fb_path = f'/dev/fb{fb_num}'
+            if not os.path.exists(fb_path):
+                early_logger.info(f"Creating framebuffer device {fb_path}")
+                try:
+                    # Create framebuffer device node
+                    subprocess.run(['sudo', 'mknod', fb_path, 'c', '29', str(fb_num * 32)], 
+                                 check=True, capture_output=True)
+                    subprocess.run(['sudo', 'chgrp', 'video', fb_path], 
+                                 check=True, capture_output=True)
+                    subprocess.run(['sudo', 'chmod', '664', fb_path], 
+                                 check=True, capture_output=True)
+                    early_logger.info(f"Successfully created {fb_path}")
+                except subprocess.CalledProcessError as e:
+                    early_logger.warning(f"Failed to create {fb_path}: {e}")
+            
+            # Check if framebuffer is now accessible
+            if os.path.exists(fb_path):
+                try:
+                    # Try to get framebuffer info
+                    result = subprocess.run(['sudo', 'fbset', '-fb', fb_path], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        early_logger.info(f"Framebuffer {fb_path} info: {result.stdout.strip()}")
+                    else:
+                        early_logger.warning(f"Could not get {fb_path} info: {result.stderr}")
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    early_logger.warning(f"fbset failed for {fb_path}: {e}")
+                    
+        return True
+    except Exception as e:
+        early_logger.error(f"Error setting up framebuffer: {e}")
+        return False
+
 # Setup display environment based on OS
 if is_ubuntu():
-    # Ubuntu Server: Use Xvfb virtual display (framebuffer typically not available)
-    early_logger.info("Setting up Xvfb virtual display for Ubuntu")
-    try:
-        # Start Xvfb display server
-        xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
-                                    stdout=subprocess.DEVNULL, 
-                                    stderr=subprocess.DEVNULL)
-        os.putenv('DISPLAY', ':99')
-        os.putenv('SDL_VIDEODRIVER', 'x11')
-        early_logger.info("Xvfb started successfully")
+    # Ubuntu Server: Try to use hardware framebuffer for real HDMI output
+    early_logger.info("Setting up display for Ubuntu Server")
+    
+    # First, try to setup framebuffer devices
+    setup_framebuffer_ubuntu()
+    
+    # Try different display methods in order of preference
+    display_method = None
+    
+    # Method 1: Try framebuffer console (real HDMI output)
+    if check_framebuffer('/dev/fb1'):
+        early_logger.info("Using framebuffer /dev/fb1 for HDMI1 output")
+        os.putenv('SDL_FBDEV', '/dev/fb1')
+        os.putenv('SDL_VIDEODRIVER', 'fbcon')
+        os.putenv('SDL_NOMOUSE', '1')
+        display_method = "fbcon_fb1"
+    elif check_framebuffer('/dev/fb0'):
+        early_logger.info("Using framebuffer /dev/fb0 for HDMI0 output")
+        os.putenv('SDL_FBDEV', '/dev/fb0')
+        os.putenv('SDL_VIDEODRIVER', 'fbcon')
+        os.putenv('SDL_NOMOUSE', '1')
+        display_method = "fbcon_fb0"
+    else:
+        # Method 2: Try DRM/KMS (Direct Rendering Manager)
+        early_logger.info("Framebuffer not available, trying DRM")
+        os.putenv('SDL_VIDEODRIVER', 'kmsdrm')
+        display_method = "kmsdrm"
         
-        # Register cleanup function
-        def cleanup_xvfb():
-            global xvfb_proc
-            if xvfb_proc:
-                try:
-                    xvfb_proc.terminate()
-                    xvfb_proc.wait(timeout=5)
-                    early_logger.info("Xvfb process terminated successfully")
-                except:
-                    try:
-                        xvfb_proc.kill()
-                        early_logger.warning("Xvfb process killed forcefully")
-                    except:
-                        early_logger.error("Failed to kill Xvfb process")
-        
-        atexit.register(cleanup_xvfb)
-        signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
-        signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
-        
-        # Give Xvfb time to start
-        time.sleep(3)
-        early_logger.info("Display setup completed for Ubuntu")
-        
-    except Exception as e:
-        early_logger.error(f"Failed to start Xvfb: {e}")
-        early_logger.error("Ensure Xvfb is installed: sudo apt install xvfb")
-        # Try fallback to framebuffer if Xvfb fails
-        if check_framebuffer('/dev/fb1'):
-            early_logger.info("Falling back to framebuffer /dev/fb1")
-            os.putenv('SDL_FBDEV', '/dev/fb1')
-            os.putenv('SDL_VIDEODRIVER', 'fbcon')
-            os.putenv('SDL_NOMOUSE', '1')
-        elif check_framebuffer('/dev/fb0'):
-            early_logger.info("Falling back to framebuffer /dev/fb0")
-            os.putenv('SDL_FBDEV', '/dev/fb0')
-            os.putenv('SDL_VIDEODRIVER', 'fbcon')
-            os.putenv('SDL_NOMOUSE', '1')
-        else:
-            early_logger.error("No display options available - neither Xvfb nor framebuffer work")
+        # If DRM fails, try DirectFB
+        if display_method == "kmsdrm":
+            try:
+                # Test if KMS DRM is available
+                test_env = os.environ.copy()
+                test_env['SDL_VIDEODRIVER'] = 'kmsdrm'
+                result = subprocess.run(['python3', '-c', 
+                    'import pygame; pygame.init(); pygame.display.set_mode((100,100))'], 
+                    env=test_env, capture_output=True, timeout=10)
+                if result.returncode != 0:
+                    early_logger.warning(f"KMS DRM test failed: {result.stderr.decode()}")
+                    early_logger.info("Trying DirectFB as fallback")
+                    os.putenv('SDL_VIDEODRIVER', 'directfb')
+                    display_method = "directfb"
+            except Exception as e:
+                early_logger.warning(f"Could not test KMS DRM: {e}")
+    
+    early_logger.info(f"Ubuntu display method selected: {display_method}")
 else:
     # Raspberry Pi OS can use framebuffer
     # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
@@ -168,10 +204,56 @@ logging.basicConfig(level=logging.INFO,
                     force=True)  # Force reconfiguration 
 logger = logging.getLogger()
 
-# Initialize Pygame
+# Initialize Pygame with debugging
+early_logger.info("Initializing pygame...")
 pygame.init()
-screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-screen_width, screen_height = screen.get_size()
+
+# Debug pygame video driver info
+try:
+    driver_name = pygame.display.get_driver()
+    early_logger.info(f"Pygame using video driver: {driver_name}")
+except:
+    early_logger.warning("Could not get pygame video driver name")
+
+# Debug available video drivers
+try:
+    drivers = pygame.display.list_drivers()
+    early_logger.info(f"Available pygame video drivers: {drivers}")
+except:
+    early_logger.warning("Could not list pygame video drivers")
+
+# Debug environment variables
+early_logger.info(f"SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER', 'not set')}")
+early_logger.info(f"SDL_FBDEV: {os.environ.get('SDL_FBDEV', 'not set')}")
+early_logger.info(f"DISPLAY: {os.environ.get('DISPLAY', 'not set')}")
+
+try:
+    early_logger.info("Attempting to create fullscreen display...")
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    screen_width, screen_height = screen.get_size()
+    early_logger.info(f"Successfully created display: {screen_width}x{screen_height}")
+    
+    # Test by filling screen with color briefly
+    early_logger.info("Testing display output with red screen...")
+    screen.fill((255, 0, 0))  # Red
+    pygame.display.flip()
+    time.sleep(2)
+    screen.fill((0, 255, 0))  # Green  
+    pygame.display.flip()
+    time.sleep(2)
+    screen.fill((0, 0, 255))  # Blue
+    pygame.display.flip()
+    time.sleep(2)
+    screen.fill((0, 0, 0))    # Black
+    pygame.display.flip()
+    early_logger.info("Display test completed")
+    
+except Exception as e:
+    early_logger.error(f"Failed to create pygame display: {e}")
+    early_logger.error("This will likely cause the slideshow to fail")
+    # Continue anyway to see what happens
+    screen = None
+    screen_width, screen_height = 1920, 1080
 
 # State variables
 state = "connecting"
