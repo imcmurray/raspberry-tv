@@ -83,7 +83,7 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 
 **Solution Implemented**:
 1. **Enhanced Package Installation** (Ansible):
-   - Added missing SDL2 development packages: `libkms1`, `libdrm-dev`, `libgbm-dev`, `libegl1-mesa-dev`, `libgles2-mesa-dev`
+   - Added missing SDL2 development packages: `libdrm-dev`, `libgbm-dev`, `libegl1-mesa-dev`, `libgles2-mesa-dev`
    - Added keyboard support package: `kbd`
 
 2. **Pygame Rebuild with Native Compilation**:

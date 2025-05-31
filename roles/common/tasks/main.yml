@@ -72,7 +72,6 @@
       - libsdl2-mixer-2.0-0
       - libsdl2-ttf-2.0-0
       # Additional SDL2 video drivers for hardware output
-      - libkms1
       - libdrm-dev
       - libgbm-dev
       - libegl1-mesa-dev
