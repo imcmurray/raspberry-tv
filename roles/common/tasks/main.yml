@@ -61,10 +61,11 @@
 - name: Install display drivers and tools (Ubuntu)
   apt:
     name:
-      - xvfb
       - libdrm2
       - libgbm1
       - fbset
+      - mesa-utils
+      - libgl1-mesa-dri
     state: present
     update_cache: yes
   when: target_os == "ubuntu"
@@ -75,6 +76,51 @@
     state: present
   when: target_os == "ubuntu"
   ignore_errors: yes
+
+- name: Configure Ubuntu for hardware display output
+  block:
+    - name: Ensure video group exists
+      group:
+        name: video
+        state: present
+    
+    - name: Add user to video and render groups for GPU access
+      user:
+        name: "{{ service_user }}"
+        groups: video,render
+        append: yes
+    
+    - name: Create DRM device directory if missing
+      file:
+        path: /dev/dri
+        state: directory
+        mode: '0755'
+    
+    - name: Check and load DRM modules
+      shell: |
+        # Load DRM modules if not already loaded
+        modprobe drm 2>/dev/null || true
+        modprobe vc4 2>/dev/null || true
+        modprobe drm_kms_helper 2>/dev/null || true
+        
+        # Show loaded modules
+        echo "Loaded DRM modules:"
+        lsmod | grep -E "(drm|vc4)" || echo "No DRM modules found"
+        
+        # Show DRM devices
+        echo "DRM devices:"
+        ls -la /dev/dri/ 2>/dev/null || echo "No /dev/dri directory"
+        
+        # Show framebuffer devices
+        echo "Framebuffer devices:"
+        ls -la /dev/fb* 2>/dev/null || echo "No framebuffer devices"
+      register: drm_status
+      changed_when: false
+    
+    - name: Display DRM and framebuffer status
+      debug:
+        var: drm_status.stdout_lines
+  when: target_os == "ubuntu"
 
 - name: Create virtual environment directory
   file:

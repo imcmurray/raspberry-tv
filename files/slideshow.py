@@ -268,13 +268,12 @@ if os.environ.get('SDL_VIDEODRIVER') is None:
 display_drivers_to_try = []
 
 if is_ubuntu():
-    # Ubuntu: Try in order of preference
+    # Ubuntu: Hardware-only drivers (no X11 fallback)
     display_drivers_to_try = [
         {'driver': 'kmsdrm', 'fbdev': None},
         {'driver': 'fbcon', 'fbdev': '/dev/fb1'},
         {'driver': 'fbcon', 'fbdev': '/dev/fb0'},
         {'driver': 'directfb', 'fbdev': None},
-        {'driver': 'x11', 'fbdev': None},  # Last resort with Xvfb
     ]
 else:
     # Raspberry Pi: Standard framebuffer approach
@@ -301,20 +300,23 @@ for attempt, config in enumerate(display_drivers_to_try):
     elif 'SDL_FBDEV' in os.environ:
         del os.environ['SDL_FBDEV']
     
-    # Special setup for X11 (Xvfb fallback)
-    xvfb_proc = None
-    if driver == 'x11':
+    # Special setup for different drivers
+    if driver == 'kmsdrm':
+        # For KMS/DRM, ensure we're in the video group and check for DRM devices
+        early_logger.info("Setting up KMS/DRM driver...")
         try:
-            early_logger.info("Starting Xvfb for X11 fallback...")
-            xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
-                                        stdout=subprocess.DEVNULL, 
-                                        stderr=subprocess.DEVNULL)
-            os.environ['DISPLAY'] = ':99'
-            time.sleep(3)  # Give Xvfb time to start
-            early_logger.info("Xvfb started successfully")
+            # Check for DRM devices
+            drm_devices = [f for f in os.listdir('/dev/dri') if f.startswith('card')]
+            early_logger.info(f"Available DRM devices: {drm_devices}")
+            if not drm_devices:
+                early_logger.warning("No DRM devices found in /dev/dri")
         except Exception as e:
-            early_logger.error(f"Failed to start Xvfb: {e}")
-            continue
+            early_logger.warning(f"Could not check DRM devices: {e}")
+    
+    elif driver == 'directfb':
+        # DirectFB setup if needed
+        early_logger.info("Setting up DirectFB driver...")
+        pass
     
     try:
         # Reinitialize pygame with new driver
@@ -336,40 +338,10 @@ for attempt, config in enumerate(display_drivers_to_try):
         pygame.display.flip()
         early_logger.info(f"Display test completed successfully with {driver}")
         
-        # Register Xvfb cleanup if we're using it
-        if xvfb_proc:
-            def cleanup_xvfb():
-                if xvfb_proc:
-                    try:
-                        xvfb_proc.terminate()
-                        xvfb_proc.wait(timeout=5)
-                        early_logger.info("Xvfb terminated successfully")
-                    except:
-                        try:
-                            xvfb_proc.kill()
-                            early_logger.warning("Xvfb killed forcefully")
-                        except:
-                            early_logger.error("Failed to kill Xvfb")
-            
-            atexit.register(cleanup_xvfb)
-            signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
-            signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
-        
         break  # Success! Exit the retry loop
         
     except Exception as e:
         early_logger.warning(f"Failed to create display with {driver}: {e}")
-        
-        # Clean up Xvfb if it was started
-        if xvfb_proc:
-            try:
-                xvfb_proc.terminate()
-                xvfb_proc.wait(timeout=2)
-            except:
-                try:
-                    xvfb_proc.kill()
-                except:
-                    pass
         
         # Continue to next driver
         continue
