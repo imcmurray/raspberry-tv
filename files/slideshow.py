@@ -31,10 +31,55 @@ def signal_handler(signum, frame):
 
 signal.signal(signal.SIGHUP, signal_handler)
 
-# Setup framebuffer environment for headless operation
-os.putenv('SDL_FBDEV', '/dev/fb0')
-os.putenv('SDL_VIDEODRIVER', 'fbcon')
-os.putenv('SDL_NOMOUSE', '1')
+# Detect if running on Ubuntu (needs Xvfb) vs Raspberry Pi OS (can use fbcon)
+def is_ubuntu():
+    """Check if running on Ubuntu."""
+    try:
+        with open('/etc/os-release', 'r') as f:
+            return 'Ubuntu' in f.read()
+    except:
+        return False
+
+# Global variable for Xvfb process
+xvfb_proc = None
+
+# Setup display environment based on OS
+if is_ubuntu():
+    # Ubuntu Server needs Xvfb virtual display
+    import subprocess
+    import atexit
+    
+    # Start Xvfb display server
+    xvfb_proc = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
+                                stdout=subprocess.DEVNULL, 
+                                stderr=subprocess.DEVNULL)
+    os.putenv('DISPLAY', ':99')
+    os.putenv('SDL_VIDEODRIVER', 'x11')
+    
+    # Register cleanup function
+    def cleanup_xvfb():
+        global xvfb_proc
+        if xvfb_proc:
+            try:
+                xvfb_proc.terminate()
+                xvfb_proc.wait(timeout=5)
+            except:
+                try:
+                    xvfb_proc.kill()
+                except:
+                    pass
+    
+    atexit.register(cleanup_xvfb)
+    signal.signal(signal.SIGTERM, lambda s, f: cleanup_xvfb())
+    signal.signal(signal.SIGINT, lambda s, f: cleanup_xvfb())
+    
+    # Give Xvfb time to start
+    time.sleep(2)
+else:
+    # Raspberry Pi OS can use framebuffer
+    os.putenv('SDL_FBDEV', '/dev/fb0')
+    os.putenv('SDL_VIDEODRIVER', 'fbcon')
+    os.putenv('SDL_NOMOUSE', '1')
 
 # Define Configuration Path
 CONFIG_FILE_PATH = '/etc/slideshow.conf'

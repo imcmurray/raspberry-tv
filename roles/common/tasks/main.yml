@@ -58,6 +58,13 @@
     state: present
   when: target_os == "ubuntu"
 
+- name: Install Xvfb for virtual display (Ubuntu)
+  apt:
+    name:
+      - xvfb
+    state: present
+  when: target_os == "ubuntu"
+
 - name: Create virtual environment directory
   file:
     path: /opt/slideshow
