@@ -63,12 +63,18 @@
     name:
       - xvfb
       - libdrm2
-      - libkms1
       - libgbm1
       - fbset
-      - libdirectfb-1.7-7
+    state: present
+    update_cache: yes
+  when: target_os == "ubuntu"
+
+- name: Install DirectFB (Ubuntu - optional)
+  apt:
+    name: libdirectfb-1.7-7
     state: present
   when: target_os == "ubuntu"
+  ignore_errors: yes
 
 - name: Create virtual environment directory
   file:
