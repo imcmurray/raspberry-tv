@@ -1,15 +1,60 @@
+- name: Skip HDMI configuration on non-Raspberry Pi OS
+  debug:
+    msg: "Skipping Raspberry Pi specific HDMI configuration on {{ target_os }}"
+  when: target_os != "raspios"
+
+- name: Check for config.txt location
+  stat:
+    path: "{{ item }}"
+  register: config_locations
+  loop:
+    - /boot/firmware/config.txt
+    - /boot/config.txt
+  when: target_os == "raspios"
+
+- name: Set boot config path
+  set_fact:
+    boot_config_path: "{{ item.item }}"
+  loop: "{{ config_locations.results }}"
+  when: 
+    - target_os == "raspios"
+    - item.stat.exists
+
 - name: Set HDMI group and mode
   lineinfile:
-    path: /boot/config.txt
+    path: "{{ boot_config_path }}"
     line: '{{ item }}'
   loop:
     - 'hdmi_group=1'
     - 'hdmi_mode=16'
   notify: reboot
+  when: 
+    - target_os == "raspios"
+    - boot_config_path is defined
+
+- name: Check for cmdline.txt location
+  stat:
+    path: "{{ item }}"
+  register: cmdline_locations
+  loop:
+    - /boot/firmware/cmdline.txt
+    - /boot/cmdline.txt
+  when: target_os == "raspios"
+
+- name: Set boot cmdline path
+  set_fact:
+    boot_cmdline_path: "{{ item.item }}"
+  loop: "{{ cmdline_locations.results }}"
+  when: 
+    - target_os == "raspios"
+    - item.stat.exists
 
 - name: Add consoleblank=0 to cmdline.txt
   shell: |
-    if ! grep -q "consoleblank=0" /boot/cmdline.txt; then
-      sed -i 's/$/ consoleblank=0/' /boot/cmdline.txt
+    if ! grep -q "consoleblank=0" {{ boot_cmdline_path }}; then
+      sed -i 's/$/ consoleblank=0/' {{ boot_cmdline_path }}
     fi
   notify: reboot
+  when: 
+    - target_os == "raspios"
+    - boot_cmdline_path is defined

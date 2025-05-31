@@ -1,3 +1,29 @@
+- name: Detect operating system
+  shell: |
+    if [ -f /etc/rpi-issue ]; then
+      echo "raspios"
+    elif grep -q "Ubuntu" /etc/os-release; then
+      echo "ubuntu"
+    else
+      echo "unknown"
+    fi
+  register: detected_os
+  changed_when: false
+
+- name: Set OS fact
+  set_fact:
+    target_os: "{{ detected_os.stdout }}"
+
+- name: Warn about Ubuntu compatibility
+  debug:
+    msg: |
+      WARNING: Ubuntu detected on Raspberry Pi.
+      This system is designed for Raspberry Pi OS. Some features may not work:
+      - HDMI power management (vcgencmd)
+      - Boot configuration (/boot/config.txt)
+      Consider switching to Raspberry Pi OS for full functionality.
+  when: target_os == "ubuntu"
+
 - name: Update package list
   apt:
     update_cache: yes
