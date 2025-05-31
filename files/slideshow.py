@@ -314,12 +314,15 @@ for attempt, config in enumerate(display_drivers_to_try):
                 # Try to use the primary card (usually card0 for HDMI0, card1 for HDMI1)
                 # For dual HDMI setup, use card1 for slideshow display
                 preferred_card = 'card1' if 'card1' in drm_devices else drm_devices[0]
-                os.environ['SDL_DRM_DEVICE'] = f'/dev/dri/{preferred_card}'
-                early_logger.info(f"Using DRM device: /dev/dri/{preferred_card}")
+                drm_device_path = f'/dev/dri/{preferred_card}'
+                early_logger.info(f"Attempting to use KMS/DRM with {drm_device_path}")
+                os.environ['SDL_DRM_DEVICE'] = drm_device_path
                 
                 # Additional DRM/KMS environment variables
                 os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
                 os.environ['SDL_KMSDRM_DEVICE_INDEX'] = '0'  # Use first available device
+                early_logger.info(f"Set SDL_DRM_DEVICE to: {os.environ.get('SDL_DRM_DEVICE')}")
+                early_logger.info(f"Set SDL_KMSDRM_DEVICE_INDEX to: {os.environ.get('SDL_KMSDRM_DEVICE_INDEX')}")
                 
         except Exception as e:
             early_logger.warning(f"Could not check DRM devices: {e}")
@@ -364,7 +367,7 @@ if screen is None:
     # Run the diagnostic script to help troubleshoot
     try:
         import subprocess
-        result = subprocess.run(['/usr/local/bin/pygame_diagnostic.py'], 
+        result = subprocess.run([sys.executable, '/usr/local/bin/pygame_diagnostic.py'],
                               capture_output=True, text=True, timeout=60)
         early_logger.info("Pygame diagnostic output:")
         early_logger.info(result.stdout)
