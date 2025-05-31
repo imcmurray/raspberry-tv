@@ -65,6 +65,44 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 - HDMI output automatically controlled by office hours
 - `vcgencmd display_power` commands for Pi-specific power control
 
+## Issue Tracking & Known Solutions
+
+### Issue #2: Chrome Driver Session Management (RESOLVED)
+
+**Problem**: Chrome driver session management issues when capturing website screenshots, particularly evident during testing on Arch Linux systems.
+
+**Symptoms**:
+- Chrome driver session leaks and "Target window already closed" errors
+- Missing dependencies on fresh Arch installations
+- Website screenshot failures with poor error handling
+
+**Root Cause**: 
+- Inadequate error handling and resource management in Selenium WebDriver
+- Missing Chrome/Chromium, chromedriver, and selenium packages on Arch Linux
+- Arch-specific path differences for Chromium binary location
+
+**Solution Implemented**:
+1. **Dependency Installation** (Arch Linux):
+   ```bash
+   sudo pacman -S chromium chromedriver python-selenium
+   ```
+
+2. **Code Fixes** in `slideshow.py`:
+   - Proper driver cleanup with try/finally blocks
+   - Retry logic (3 attempts) for failed captures
+   - Session validation before screenshots
+   - Arch-specific Chrome flags for stability
+   - Auto-detection of Chromium binary at `/usr/bin/chromium`
+   - Enhanced error messages with Arch installation commands
+
+3. **Testing Infrastructure**: 
+   - Created `test_chrome.py` for verifying Chrome/Selenium setup
+   - Validates chromedriver, chromium, and basic screenshot functionality
+
+**Status**: ✅ **RESOLVED** - Fixed in commits `ac940a0` and later Arch-specific improvements
+
+**Testing**: Verified working on Arch Linux after dependency installation and code updates.
+
 ## Important Notes
 
 - System assumes CouchDB is accessible without authentication
@@ -72,3 +110,4 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 - Pi uses DHCP unless network role is modified for static IP
 - All image content is resized to HD resolution before storage
 - Web interfaces require CouchDB CORS configuration for cross-origin requests
+- **Arch Linux users**: Ensure Chromium, chromedriver, and python-selenium are installed before running slideshow
