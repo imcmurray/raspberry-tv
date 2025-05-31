@@ -28,12 +28,6 @@
     dest: /etc/systemd/system/hdmi_sleep.service
     mode: 0644
 
-- name: Create logs database in CouchDB
-  uri:
-    url: '{{ couchdb_url }}/logs'
-    method: PUT
-    status_code: 201,412
-
 - name: Enable and start services
   systemd:
     name: '{{ item }}'
