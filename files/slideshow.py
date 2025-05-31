@@ -120,20 +120,20 @@ if is_ubuntu():
     # Method 1: Try framebuffer console (real HDMI output)
     if check_framebuffer('/dev/fb1'):
         early_logger.info("Using framebuffer /dev/fb1 for HDMI1 output")
-        os.putenv('SDL_FBDEV', '/dev/fb1')
-        os.putenv('SDL_VIDEODRIVER', 'fbcon')
-        os.putenv('SDL_NOMOUSE', '1')
+        os.environ['SDL_FBDEV'] = '/dev/fb1'
+        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+        os.environ['SDL_NOMOUSE'] = '1'
         display_method = "fbcon_fb1"
     elif check_framebuffer('/dev/fb0'):
         early_logger.info("Using framebuffer /dev/fb0 for HDMI0 output")
-        os.putenv('SDL_FBDEV', '/dev/fb0')
-        os.putenv('SDL_VIDEODRIVER', 'fbcon')
-        os.putenv('SDL_NOMOUSE', '1')
+        os.environ['SDL_FBDEV'] = '/dev/fb0'
+        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+        os.environ['SDL_NOMOUSE'] = '1'
         display_method = "fbcon_fb0"
     else:
         # Method 2: Try DRM/KMS (Direct Rendering Manager)
         early_logger.info("Framebuffer not available, trying DRM")
-        os.putenv('SDL_VIDEODRIVER', 'kmsdrm')
+        os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
         display_method = "kmsdrm"
         
         # If DRM fails, try DirectFB
@@ -148,7 +148,7 @@ if is_ubuntu():
                 if result.returncode != 0:
                     early_logger.warning(f"KMS DRM test failed: {result.stderr.decode()}")
                     early_logger.info("Trying DirectFB as fallback")
-                    os.putenv('SDL_VIDEODRIVER', 'directfb')
+                    os.environ['SDL_VIDEODRIVER'] = 'directfb'
                     display_method = "directfb"
             except Exception as e:
                 early_logger.warning(f"Could not test KMS DRM: {e}")
@@ -158,9 +158,9 @@ else:
     # Raspberry Pi OS can use framebuffer
     # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
     early_logger.info("Setting up framebuffer display for Raspberry Pi OS")
-    os.putenv('SDL_FBDEV', '/dev/fb1')
-    os.putenv('SDL_VIDEODRIVER', 'fbcon')
-    os.putenv('SDL_NOMOUSE', '1')
+    os.environ['SDL_FBDEV'] = '/dev/fb1'
+    os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+    os.environ['SDL_NOMOUSE'] = '1'
     early_logger.info("Framebuffer setup completed for Raspberry Pi OS")
 
 # Define Configuration Path
@@ -226,6 +226,43 @@ except:
 early_logger.info(f"SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER', 'not set')}")
 early_logger.info(f"SDL_FBDEV: {os.environ.get('SDL_FBDEV', 'not set')}")
 early_logger.info(f"DISPLAY: {os.environ.get('DISPLAY', 'not set')}")
+
+# Additional debugging - check if our display setup ran
+early_logger.info(f"Ubuntu detection result: {is_ubuntu()}")
+early_logger.info(f"Current working directory: {os.getcwd()}")
+early_logger.info(f"Process environment dump: {dict(os.environ)}")
+
+# If environment variables are not set, something went wrong - try to fix it
+if os.environ.get('SDL_VIDEODRIVER') is None:
+    early_logger.error("SDL_VIDEODRIVER is not set! Display setup may have failed.")
+    early_logger.info("Attempting emergency display setup...")
+    
+    if is_ubuntu():
+        early_logger.info("Emergency: Setting up Ubuntu display environment")
+        # Force framebuffer setup for Ubuntu
+        if check_framebuffer('/dev/fb1'):
+            early_logger.info("Emergency: Using framebuffer /dev/fb1")
+            os.environ['SDL_FBDEV'] = '/dev/fb1'
+            os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+            os.environ['SDL_NOMOUSE'] = '1'
+        elif check_framebuffer('/dev/fb0'):
+            early_logger.info("Emergency: Using framebuffer /dev/fb0")
+            os.environ['SDL_FBDEV'] = '/dev/fb0'
+            os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+            os.environ['SDL_NOMOUSE'] = '1'
+        else:
+            early_logger.info("Emergency: No framebuffer available, trying DRM")
+            os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
+    else:
+        early_logger.info("Emergency: Setting up Raspberry Pi display environment")
+        os.environ['SDL_FBDEV'] = '/dev/fb1'
+        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+        os.environ['SDL_NOMOUSE'] = '1'
+    
+    # Show what we set
+    early_logger.info(f"Emergency setup - SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER')}")
+    early_logger.info(f"Emergency setup - SDL_FBDEV: {os.environ.get('SDL_FBDEV')}")
+    early_logger.info(f"Emergency setup - DISPLAY: {os.environ.get('DISPLAY')}")
 
 try:
     early_logger.info("Attempting to create fullscreen display...")
