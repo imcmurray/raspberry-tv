@@ -310,6 +310,17 @@ for attempt, config in enumerate(display_drivers_to_try):
             early_logger.info(f"Available DRM devices: {drm_devices}")
             if not drm_devices:
                 early_logger.warning("No DRM devices found in /dev/dri")
+            else:
+                # Try to use the primary card (usually card0 for HDMI0, card1 for HDMI1)
+                # For dual HDMI setup, use card1 for slideshow display
+                preferred_card = 'card1' if 'card1' in drm_devices else drm_devices[0]
+                os.environ['SDL_DRM_DEVICE'] = f'/dev/dri/{preferred_card}'
+                early_logger.info(f"Using DRM device: /dev/dri/{preferred_card}")
+                
+                # Additional DRM/KMS environment variables
+                os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
+                os.environ['SDL_KMSDRM_DEVICE_INDEX'] = '0'  # Use first available device
+                
         except Exception as e:
             early_logger.warning(f"Could not check DRM devices: {e}")
     

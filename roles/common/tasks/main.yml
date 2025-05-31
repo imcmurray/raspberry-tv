@@ -66,6 +66,11 @@
       - fbset
       - mesa-utils
       - libgl1-mesa-dri
+      - libsdl2-2.0-0
+      - libsdl2-dev
+      - libsdl2-image-2.0-0
+      - libsdl2-mixer-2.0-0
+      - libsdl2-ttf-2.0-0
     state: present
     update_cache: yes
   when: target_os == "ubuntu"
@@ -133,10 +138,9 @@
   args:
     creates: "{{ venv_path }}/bin/python"
 
-- name: Install Python libraries in virtual environment
+- name: Install Python libraries in virtual environment (except pygame)
   pip:
     name:
-      - pygame
       - requests
       - opencv-python
       - numpy
@@ -144,3 +148,25 @@
       - Pillow
       - urllib3
     virtualenv: "{{ venv_path }}"
+
+- name: Rebuild pygame with proper SDL2 support (Ubuntu)
+  block:
+    - name: Uninstall existing pygame
+      pip:
+        name: pygame
+        state: absent
+        virtualenv: "{{ venv_path }}"
+      ignore_errors: yes
+    
+    - name: Install pygame with proper SDL2 libraries
+      pip:
+        name: pygame
+        virtualenv: "{{ venv_path }}"
+        extra_args: "--force-reinstall --no-cache-dir"
+  when: target_os == "ubuntu"
+
+- name: Install pygame normally for Raspberry Pi OS
+  pip:
+    name: pygame
+    virtualenv: "{{ venv_path }}"
+  when: target_os == "raspios"
