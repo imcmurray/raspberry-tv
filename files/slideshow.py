@@ -17,8 +17,11 @@ from selenium.webdriver.support import expected_conditions as EC
 import hashlib
 import os
 import tempfile
-
-import sys # For sys.exit
+import sys
+from PIL import Image
+from queue import Queue
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Define Configuration Path
 CONFIG_FILE_PATH = '/etc/slideshow.conf'
@@ -47,7 +50,7 @@ try:
     manager_url = config.get('settings', 'manager_url')
 except configparser.NoOptionError as e:
     logging.error(f"Critical: Missing essential configuration in {CONFIG_FILE_PATH}: {e}")
-    print(f"Critical: Missing essential configuration in {CONFIG_FILE_PATH}: {e}", file=sys.stderr)
+    print(f"Critical: Configuration file {CONFIG_FILE_PATH}: {e}", file=sys.stderr)
     sys.exit(1)
 
 # Read optional settings
@@ -70,140 +73,61 @@ state = "connecting"
 slides = []
 need_refetch = threading.Event()
 website_cache = {}  # Cache for website screenshots
-capture_queue = []  # Queue for upcoming website captures
+capture_queue = Queue(maxsize=1)  # Queue for single webpage capture
 capture_lock = threading.Lock()
+capture_in_progress = False  # Flag to track ongoing capture
+current_slide_index = 0  # Track current slide index
+cleanup_lock = threading.Lock()  # Lock for attachment cleanup
 
 # Function to capture website screenshot
-def capture_website(url, timeout=10):
+def capture_website(url, timeout=20):
     """Capture website screenshot and return pygame surface"""
     driver = None
     try:
-        # Setup headless Chrome to capture at exactly 1920x1080
+        # Setup headless Chrome
         chrome_options = Options()
-        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-web-security')
-        chrome_options.add_argument('--allow-running-insecure-content')
+        chrome_options.add_argument('--kiosk')
         chrome_options.add_argument('--force-device-scale-factor=1')
-        chrome_options.add_argument('--disable-background-timer-throttling')
-        chrome_options.add_argument('--disable-renderer-backgrounding')
         chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--force-viewport-size=1920,1080')
-        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
         chrome_options.add_argument('--hide-scrollbars')
-        chrome_options.add_argument('--disable-plugins')
         chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--disable-infobars')
-        chrome_options.add_argument('--disable-notifications')
-        chrome_options.add_argument('--disable-default-apps')
-        chrome_options.add_argument('--virtual-time-budget=5000')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('--disable-dev-tools')
-        chrome_options.add_argument('--disable-crash-reporter')
-        chrome_options.add_argument('--disable-in-process-stack-traces')
-        chrome_options.add_argument('--disable-logging')
-        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
-        # Arch Linux specific flags for better stability
-        chrome_options.add_argument('--disable-software-rasterizer')
-        chrome_options.add_argument('--disable-background-networking')
-        chrome_options.add_argument('--disable-ipc-flooding-protection')
-        chrome_options.add_argument('--disable-component-extensions-with-background-pages')
-        # Memory management for long-running processes
-        chrome_options.add_argument('--memory-pressure-off')
-        chrome_options.add_argument('--max_old_space_size=4096')
-        # Additional session stability flags
-        chrome_options.add_argument('--disable-features=TranslateUI')
+        chrome_options.add_argument('--disable-features=TranslateUI,VizDisplayCompositor')
         chrome_options.add_argument('--no-first-run')
         chrome_options.add_argument('--no-default-browser-check')
-        chrome_options.add_argument('--disable-session-crashed-bubble')
-        chrome_options.add_argument('--disable-restore-session-state')
-        chrome_options.add_argument('--disable-hang-monitor')
-        # Force single process to avoid session issues
-        chrome_options.add_argument('--single-process')
+
+        # Initialize driver with service
+        from selenium.webdriver.chrome.service import Service
+        service = Service()
         
         try:
-            # Try Chromium first (common on Arch), then fallback to Chrome
-            try:
-                chrome_options.binary_location = '/usr/bin/chromium'
-                driver = webdriver.Chrome(options=chrome_options)
-                logger.info("Using Chromium browser from /usr/bin/chromium")
-            except Exception:
-                # Fallback to default Chrome detection - create new options without binary_location
-                chrome_options_fallback = Options()
-                chrome_options_fallback.add_argument('--headless')
-                chrome_options_fallback.add_argument('--no-sandbox')
-                chrome_options_fallback.add_argument('--disable-dev-shm-usage')
-                chrome_options_fallback.add_argument('--disable-gpu')
-                chrome_options_fallback.add_argument('--disable-web-security')
-                chrome_options_fallback.add_argument('--allow-running-insecure-content')
-                chrome_options_fallback.add_argument('--force-device-scale-factor=1')
-                chrome_options_fallback.add_argument('--disable-background-timer-throttling')
-                chrome_options_fallback.add_argument('--disable-renderer-backgrounding')
-                chrome_options_fallback.add_argument('--window-size=1920,1080')
-                chrome_options_fallback.add_argument('--force-viewport-size=1920,1080')
-                chrome_options_fallback.add_argument('--disable-features=VizDisplayCompositor')
-                chrome_options_fallback.add_argument('--hide-scrollbars')
-                chrome_options_fallback.add_argument('--disable-plugins')
-                chrome_options_fallback.add_argument('--disable-extensions')
-                chrome_options_fallback.add_argument('--disable-infobars')
-                chrome_options_fallback.add_argument('--disable-notifications')
-                chrome_options_fallback.add_argument('--disable-default-apps')
-                chrome_options_fallback.add_argument('--virtual-time-budget=5000')
-                chrome_options_fallback.add_argument('--disable-blink-features=AutomationControlled')
-                chrome_options_fallback.add_argument('--disable-dev-tools')
-                chrome_options_fallback.add_argument('--disable-crash-reporter')
-                chrome_options_fallback.add_argument('--disable-in-process-stack-traces')
-                chrome_options_fallback.add_argument('--disable-logging')
-                chrome_options_fallback.add_argument('--disable-backgrounding-occluded-windows')
-                chrome_options_fallback.add_argument('--disable-software-rasterizer')
-                chrome_options_fallback.add_argument('--disable-background-networking')
-                chrome_options_fallback.add_argument('--disable-ipc-flooding-protection')
-                chrome_options_fallback.add_argument('--disable-component-extensions-with-background-pages')
-                chrome_options_fallback.add_argument('--memory-pressure-off')
-                chrome_options_fallback.add_argument('--max_old_space_size=4096')
-                chrome_options_fallback.add_argument('--disable-features=TranslateUI')
-                chrome_options_fallback.add_argument('--no-first-run')
-                chrome_options_fallback.add_argument('--no-default-browser-check')
-                chrome_options_fallback.add_argument('--disable-session-crashed-bubble')
-                chrome_options_fallback.add_argument('--disable-restore-session-state')
-                chrome_options_fallback.add_argument('--disable-hang-monitor')
-                chrome_options_fallback.add_argument('--single-process')
-                driver = webdriver.Chrome(options=chrome_options_fallback)
-                logger.info("Using default Chrome browser")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("Using Chrome browser")
         except Exception as chrome_error:
             logger.error(f"Failed to initialize Chrome driver: {chrome_error}")
-            logger.error("Make sure Chromium/Chrome browser and ChromeDriver are installed:")
+            logger.error("Ensure Chromium/Chrome and ChromeDriver are installed:")
             logger.error("  sudo pacman -S chromium chromedriver python-selenium")
             return None, None
-            
-        # Allow driver to fully initialize
-        time.sleep(1.0)
-        
-        # Set timeouts with more conservative values
+
+        # Set timeouts
         driver.set_page_load_timeout(timeout)
-        driver.implicitly_wait(5)
+        driver.implicitly_wait(10)
         
-        # Set window size to exactly 1920x1080
+        # Set window size
         driver.set_window_size(1920, 1080)
+        time.sleep(2.0)
+
+        # Navigate to URL
+        try:
+            driver.get(url)
+        except Exception as nav_error:
+            logger.error(f"Navigation failed for {url}: {nav_error}")
+            return None, None
         
-        # Additional wait for window size to take effect
-        time.sleep(0.5)
-        
-        # Navigate to URL with retry logic
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                driver.get(url)
-                break
-            except Exception as nav_error:
-                logger.warning(f"Navigation attempt {attempt + 1} failed for {url}: {nav_error}")
-                if attempt == max_retries - 1:
-                    raise nav_error
-                time.sleep(1)
-        
-        # Wait for page to load with better error handling
+        # Wait for page to load
         try:
             WebDriverWait(driver, timeout).until(
                 lambda d: d.execute_script("return document.readyState") == "complete"
@@ -211,128 +135,108 @@ def capture_website(url, timeout=10):
         except Exception as wait_error:
             logger.warning(f"Page load timeout for {url}, proceeding anyway: {wait_error}")
         
-        # Force viewport to exactly 1920x1080 using JavaScript
+        # Set viewport styles
         try:
             driver.execute_script("""
-                // Force the viewport size
                 document.body.style.width = '1920px';
-                document.body.style.height = '1080px';
+                document.body.style.minHeight = '1080px';
                 document.body.style.overflow = 'hidden';
                 document.body.style.margin = '0';
                 document.body.style.padding = '0';
                 document.documentElement.style.width = '1920px';
-                document.documentElement.style.height = '1080px';
+                document.documentElement.style.minHeight = '1080px';
                 document.documentElement.style.overflow = 'hidden';
                 document.documentElement.style.margin = '0';
                 document.documentElement.style.padding = '0';
-                
-                // Remove any potential UI elements that could affect size
-                var elements = document.querySelectorAll('*');
-                for (var i = 0; i < elements.length; i++) {
-                    var el = elements[i];
-                    if (el.style) {
-                        el.style.maxWidth = 'none';
-                        el.style.maxHeight = 'none';
-                    }
-                }
-                
-                // Force window size
-                window.innerWidth = 1920;
-                window.innerHeight = 1080;
+                var meta = document.createElement('meta');
+                meta.name = 'viewport';
+                meta.content = 'width=1920, height=1080, initial-scale=1, shrink-to-fit=no';
+                document.head.appendChild(meta);
             """)
+            # Log viewport size
+            viewport_size = driver.execute_script("""
+                return {
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    outerWidth: window.outerWidth,
+                    outerHeight: window.outerHeight,
+                    documentHeight: document.documentElement.clientHeight,
+                    bodyHeight: document.body.clientHeight
+                };
+            """)
+            logger.info(f"Viewport size for {url}: {viewport_size}")
         except Exception as js_error:
-            logger.warning(f"JavaScript execution failed for {url}: {js_error}")
+            logger.error(f"JavaScript execution failed for {url}: {js_error}")
         
-        # Wait for the viewport change to take effect and page to stabilize
         time.sleep(2.0)
         
-        # Take screenshot with robust validation that driver is still active
-        screenshot_data = None
+        # Take full screenshot
         try:
-            # Multiple validation checks for session state
-            if not driver:
-                raise Exception("Driver is None")
+            # Get page dimensions
+            total_height = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, document.body.offsetHeight, document.documentElement.offsetHeight, document.body.clientHeight, document.documentElement.clientHeight);")
+            total_width = 1920
             
-            # Check if driver session is still active with multiple methods
-            try:
-                # Method 1: Check current_url
-                current_url = driver.current_url
-                logger.debug(f"Driver session active, current URL: {current_url}")
-            except Exception as url_check_error:
-                logger.warning(f"Driver current_url check failed: {url_check_error}")
-                raise Exception(f"Driver session not active: {url_check_error}")
-            
-            try:
-                # Method 2: Check window handles
-                handles = driver.window_handles
-                if not handles:
-                    raise Exception("No window handles available")
-                logger.debug(f"Driver has {len(handles)} window handle(s)")
-            except Exception as handles_error:
-                logger.warning(f"Driver window handles check failed: {handles_error}")
-                raise Exception(f"Driver window not available: {handles_error}")
-            
-            try:
-                # Method 3: Check if we can execute a simple script
-                driver.execute_script("return document.readyState;")
-                logger.debug("Driver script execution test passed")
-            except Exception as script_error:
-                logger.warning(f"Driver script execution failed: {script_error}")
-                raise Exception(f"Driver not responsive: {script_error}")
-            
-            # If all validations pass, take the screenshot
+            # Set window height to capture full page
+            driver.set_window_size(1920, total_height)
             screenshot_data = driver.get_screenshot_as_png()
-            logger.debug(f"Screenshot captured successfully ({len(screenshot_data)} bytes)")
-            
+            logger.debug(f"Screenshot captured successfully: ({len(screenshot_data)} bytes)")
         except Exception as screenshot_error:
             logger.error(f"Failed to take screenshot for {url}: {screenshot_error}")
-            # Don't re-raise here - let the outer handler deal with it
-            screenshot_data = None
+            return None, None
         finally:
-            # Ensure driver is always closed with multiple attempts
             if driver:
-                for attempt in range(3):
-                    try:
-                        driver.quit()
-                        logger.debug(f"Driver cleanup successful on attempt {attempt + 1}")
-                        break
-                    except Exception as cleanup_error:
-                        if attempt == 2:  # Last attempt
-                            logger.error(f"Driver cleanup failed after 3 attempts: {cleanup_error}")
-                        else:
-                            logger.warning(f"Driver cleanup attempt {attempt + 1} failed: {cleanup_error}")
-                            time.sleep(0.5)  # Wait before retry
-        
+                try:
+                    driver.quit()
+                except Exception as cleanup_error:
+                    logger.warning(f"Driver cleanup failed: {cleanup_error}")
+
         if not screenshot_data:
             logger.error(f"No screenshot data captured for {url}")
             return None, None
+
+        # Process screenshot to 1920x1080
+        image = Image.open(BytesIO(screenshot_data))
+        img_width, img_height = image.size
+        logger.info(f"Raw screenshot size for {url}: {img_width}x{img_height}")
         
+        if img_width != 1920 or img_height < 1080:
+            # Create 1920x1080 image with white background
+            new_image = Image.new('RGB', (1920, 1080), (255, 255, 255))
+            # Paste original image at top
+            new_image.paste(image, (0, 0))
+            image = new_image
+        elif img_height > 1080:
+            # Crop to 1920x1080 from top
+            image = image.crop((0, 0, 1920, 1080))
+        
+        # Save to BytesIO for pygame
+        output = BytesIO()
+        image.save(output, format='PNG')
+        screenshot_data = output.getvalue()
+        output.close()
+
         # Convert to pygame surface
         image_data = BytesIO(screenshot_data)
-        image = pygame.image.load(image_data)
-        
-        # Verify we got exactly 1920x1080, if not force it
-        img_width, img_height = image.get_size()
+        image_surface = pygame.image.load(image_data)
+
+        # Verify resolution
+        img_width, img_height = image_surface.get_size()
         if (img_width, img_height) != (1920, 1080):
-            logger.warning(f"Screenshot captured at {img_width}x{img_height}, forcing to 1920x1080")
-            image = pygame.transform.smoothscale(image, (1920, 1080))
-            img_width, img_height = 1920, 1080
-        
-        # Scale to fit screen display if needed
+            logger.error(f"Screenshot processed to {img_width}x{img_height}, expected 1920x1080")
+            return None, None
+
+        # Scale to fit screen
         width_ratio = screen_width / img_width
         height_ratio = screen_height / img_height
         scale_ratio = min(width_ratio, height_ratio)
-        
         new_width = int(img_width * scale_ratio)
         new_height = int(img_height * scale_ratio)
-        
-        scaled_image = pygame.transform.smoothscale(image, (new_width, new_height))
-        
+        scaled_image = pygame.transform.smoothscale(image_surface, (new_width, new_height))
+
         return scaled_image, screenshot_data
-        
+
     except Exception as e:
         logger.error(f"Error capturing website {url}: {e}")
-        # Ensure driver cleanup even on error
         if driver:
             try:
                 driver.quit()
@@ -344,25 +248,19 @@ def capture_website(url, timeout=10):
 def upload_website_screenshot(url, screenshot_data):
     """Upload website screenshot to CouchDB and return attachment name"""
     try:
-        # Create unique filename based on URL and timestamp
         url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
         timestamp = int(time.time())
         filename = f"website_{timestamp}_{url_hash}.png"
-        
-        # Upload to CouchDB
         upload_url = f"{couchdb_url}/slideshows/{tv_uuid}/{filename}"
         
-        # Get current document revision
         doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=5)
         if doc_response.status_code == 200:
             current_rev = doc_response.json().get('_rev')
             upload_url += f"?rev={current_rev}"
-            
             response = requests.put(upload_url, 
                                   data=screenshot_data,
                                   headers={'Content-Type': 'image/png'},
                                   timeout=10)
-            
             if response.status_code in [200, 201]:
                 logger.info(f"Successfully uploaded website screenshot: {filename}")
                 return filename
@@ -372,7 +270,6 @@ def upload_website_screenshot(url, screenshot_data):
         else:
             logger.error(f"Failed to get document revision for website upload")
             return None
-            
     except Exception as e:
         logger.error(f"Error uploading website screenshot: {e}")
         return None
@@ -381,20 +278,14 @@ def upload_website_screenshot(url, screenshot_data):
 def process_video(video_name):
     """Process video file and return video capture object"""
     try:
-        # Download video from CouchDB to temporary file
         url = f"{couchdb_url}/slideshows/{tv_uuid}/{video_name}"
         headers = {'Cache-Control': 'no-store'}
         response = requests.get(url, headers=headers, timeout=30)
-        
         if response.status_code == 200:
-            # Save to temporary file
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
             temp_file.write(response.content)
             temp_file.close()
-            
-            # Open with OpenCV
             cap = cv2.VideoCapture(temp_file.name)
-            
             if cap.isOpened():
                 return cap, temp_file.name
             else:
@@ -404,7 +295,6 @@ def process_video(video_name):
         else:
             logger.error(f"HTTP error {response.status_code} fetching video {video_name}")
             return None, None
-            
     except Exception as e:
         logger.error(f"Error processing video {video_name}: {e}")
         return None, None
@@ -413,119 +303,13 @@ def process_video(video_name):
 def cv2_to_pygame(cv2_frame):
     """Convert OpenCV frame to pygame surface"""
     try:
-        # Convert BGR to RGB
         rgb_frame = cv2.cvtColor(cv2_frame, cv2.COLOR_BGR2RGB)
-        # Rotate 90 degrees and flip for correct orientation
         rgb_frame = np.rot90(rgb_frame)
         rgb_frame = np.flipud(rgb_frame)
-        # Create pygame surface
         surface = pygame.surfarray.make_surface(rgb_frame)
         return surface
     except Exception as e:
         logger.error(f"Error converting cv2 frame to pygame: {e}")
-        return None
-
-# Background thread for website capture
-def website_capture_worker():
-    """Background worker to capture website screenshots"""
-    while True:
-        try:
-            with capture_lock:
-                if capture_queue:
-                    slide_data = capture_queue.pop(0)
-                else:
-                    slide_data = None
-            
-            if slide_data:
-                url = slide_data.get('url')
-                if url:
-                    # Check if we need to refresh this URL (not in cache or stale)
-                    needs_refresh = True
-                    if url in website_cache:
-                        cached = website_cache[url]
-                        if time.time() - cached['timestamp'] < 60:  # Less than 1 minute old
-                            needs_refresh = False
-                    
-                    if needs_refresh:
-                        logger.info(f"Pre-capturing website: {url}")
-                        max_attempts = 3
-                        for attempt in range(max_attempts):
-                            try:
-                                surface, screenshot_data = capture_website(url, timeout=15)
-                                if surface and screenshot_data:
-                                    # Upload to CouchDB
-                                    filename = upload_website_screenshot(url, screenshot_data)
-                                    if filename:
-                                        website_cache[url] = {
-                                            'surface': surface,
-                                            'filename': filename,
-                                            'timestamp': time.time()
-                                        }
-                                        logger.info(f"Successfully pre-captured website: {url}")
-                                    else:
-                                        # Store in cache anyway for local use
-                                        website_cache[url] = {
-                                            'surface': surface,
-                                            'filename': f"website_{int(time.time())}.png",
-                                            'timestamp': time.time()
-                                        }
-                                        logger.info(f"Website captured but upload failed, cached locally: {url}")
-                                    break
-                                else:
-                                    logger.warning(f"Attempt {attempt + 1} failed for website: {url}")
-                                    if attempt < max_attempts - 1:
-                                        time.sleep(2)  # Wait before retry
-                            except Exception as capture_error:
-                                logger.error(f"Capture attempt {attempt + 1} failed for {url}: {capture_error}")
-                                if attempt < max_attempts - 1:
-                                    time.sleep(2)  # Wait before retry
-                                else:
-                                    logger.error(f"All {max_attempts} capture attempts failed for {url}")
-            
-            time.sleep(1)  # Check queue every second
-            
-        except Exception as e:
-            logger.error(f"Error in website capture worker: {e}")
-            time.sleep(5)
-
-# Start website capture worker thread
-threading.Thread(target=website_capture_worker, daemon=True).start()
-
-# Function to queue website for pre-capture
-def queue_website_capture(slides_list, current_index):
-    """Queue upcoming website slides for pre-capture"""
-    try:
-        with capture_lock:
-            # Look ahead 1-2 slides
-            for i in range(1, min(3, len(slides_list) - current_index)):
-                next_index = (current_index + i) % len(slides_list)
-                next_slide = slides_list[next_index]
-                
-                if next_slide.get('type') == 'website':
-                    url = next_slide.get('url')
-                    if url and url not in website_cache:
-                        # Check if already queued
-                        if not any(item.get('url') == url for item in capture_queue):
-                            capture_queue.append({'url': url})
-                            logger.info(f"Queued website for capture: {url}")
-    except Exception as e:
-        logger.error(f"Error queuing website capture: {e}")
-
-# Function to fetch the slideshow document from CouchDB
-def fetch_document():
-    try:
-        url = f"{couchdb_url}/slideshows/{tv_uuid}"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            logger.info("Successfully fetched document")
-            return response.json()
-        elif response.status_code == 404:
-            logger.warning("Document not found")
-            return None
-        else:
-            raise Exception(f"HTTP error {response.status_code}")
-    except requests.RequestException as e:
-        logger.error(f"Error fetching document: {e}")
         return None
 
 # Function to fetch and process content from CouchDB attachments
@@ -539,79 +323,46 @@ def fetch_content(slide_doc, text_params=None):
         if not url:
             logger.error(f"Website slide missing URL: {slide_doc}")
             return None, None, None, None
-            
-        # Check cache first
+        # Check cache for pre-captured screenshot
         if url in website_cache:
             cached = website_cache[url]
-            # Use cached version if less than 1 minute old for more frequent updates
-            if time.time() - cached['timestamp'] < 60:
-                image = cached['surface']
-                # Process text overlay if needed
-                if text_params and text_params.get('text'):
-                    text_surface, text_rect = process_text_overlay(image, text_params)
-                    return image, text_surface, text_rect, cached['filename']
-                return image, None, None, cached['filename']
-            else:
-                # Remove stale cache entry
-                logger.info(f"Removing stale cache entry for: {url}")
-                del website_cache[url]
-        
-        # Capture fresh screenshot with retry logic
+            image = cached['surface']
+            content_name = cached['filename']
+            logger.info(f"Using pre-captured website screenshot: {url}")
+            if text_params and text_params.get('text'):
+                text_surface, text_rect = process_text_overlay(image, text_params)
+                return image, text_surface, text_rect, content_name
+            return image, None, None, content_name
+        # Attempt fresh capture once
         logger.info(f"Capturing fresh website screenshot: {url}")
-        max_capture_attempts = 3
-        surface = None
-        screenshot_data = None
-        
-        for attempt in range(max_capture_attempts):
-            try:
-                surface, screenshot_data = capture_website(url, timeout=20)
-                if surface and screenshot_data:
-                    break
-                else:
-                    logger.warning(f"Website capture attempt {attempt + 1} failed for {url}")
-                    if attempt < max_capture_attempts - 1:
-                        time.sleep(2)  # Wait before retry
-            except Exception as capture_error:
-                logger.error(f"Website capture attempt {attempt + 1} error for {url}: {capture_error}")
-                if attempt < max_capture_attempts - 1:
-                    time.sleep(2)  # Wait before retry
-        
+        surface, screenshot_data = capture_website(url, timeout=20)
         if surface and screenshot_data:
             filename = upload_website_screenshot(url, screenshot_data)
-            if filename:
-                website_cache[url] = {
-                    'surface': surface,
-                    'filename': filename,
-                    'timestamp': time.time()
-                }
-                image = surface
-                content_name = filename
-            else:
-                # Use surface without uploading
-                website_cache[url] = {
-                    'surface': surface,
-                    'filename': f"website_{int(time.time())}.png",
-                    'timestamp': time.time()
-                }
-                image = surface
-                content_name = f"website_{int(time.time())}.png"
-                logger.info(f"Website captured but upload failed, cached locally: {url}")
+            website_cache[url] = {
+                'surface': surface,
+                'filename': filename or f"website_{int(time.time())}.png",
+                'timestamp': time.time()
+            }
+            image = surface
+            content_name = filename or f"website_{int(time.time())}.png"
         else:
-            # Try to use cached version as fallback
+            # Fall back to previous cached image if available
             if url in website_cache:
                 cached = website_cache[url]
-                logger.warning(f"Using cached website screenshot as fallback: {url}")
                 image = cached['surface']
                 content_name = cached['filename']
+                logger.warning(f"Using previous cached screenshot due to capture failure: {url}")
             else:
-                logger.error(f"Failed to capture website after {max_capture_attempts} attempts and no cache available: {url}")
+                logger.error(f"Failed to capture website and no cache available: {url}")
                 return None, None, None, None
-                
+        if text_params and text_params.get('text'):
+            text_surface, text_rect = process_text_overlay(image, text_params)
+            return image, text_surface, text_rect, content_name
+        return image, None, None, content_name
     elif content_type == 'video':
         logger.error(f"Video content should be handled separately: {content_name}")
         return None, None, None, None
-        
-    else:  # Default to image
+    else:
         try:
             url = f"{couchdb_url}/slideshows/{tv_uuid}/{content_name}"
             headers = {'Cache-Control': 'no-store'}
@@ -619,16 +370,12 @@ def fetch_content(slide_doc, text_params=None):
             if response.status_code == 200:
                 image_data = BytesIO(response.content)
                 image = pygame.image.load(image_data)
-                
                 img_width, img_height = image.get_size()
-                
                 width_ratio = screen_width / img_width
                 height_ratio = screen_height / img_height
                 scale_ratio = min(width_ratio, height_ratio)
-                
                 new_width = int(img_width * scale_ratio)
                 new_height = int(img_height * scale_ratio)
-                
                 image = pygame.transform.smoothscale(image, (new_width, new_height))
             else:
                 logger.error(f"HTTP error {response.status_code} fetching content {content_name}")
@@ -636,12 +383,9 @@ def fetch_content(slide_doc, text_params=None):
         except Exception as e:
             logger.error(f"Error fetching content {content_name}: {e}")
             return None, None, None, None
-
-    # Process text overlay
     if text_params and text_params.get('text'):
         text_surface, text_rect = process_text_overlay(image, text_params)
         return image, text_surface, text_rect, content_name
-    
     return image, None, None, content_name
 
 # Function to process text overlay
@@ -651,27 +395,19 @@ def process_text_overlay(image, text_params):
         text_content = text_params['text']
         if '{datetime}' in text_content:
             text_content = text_content.replace('{datetime}', datetime.now().strftime("%Y-%m-%d %H:%M"))
-
         font_size_map = {"small": 24, "medium": 36, "large": 48}
         actual_font_size = font_size_map.get(text_params.get('text_size', 'medium'), 36)
-        
         try:
             font = pygame.font.Font("freesansbold.ttf", actual_font_size)
         except IOError:
             font = pygame.font.Font(None, actual_font_size)
-        
         text_color_hex = text_params.get('text_color', '#FFFFFF')
         text_color_rgb = pygame.Color(text_color_hex)
-        
         text_surface = font.render(text_content, True, text_color_rgb)
-        
         text_pos_key = text_params.get('text_position', 'bottom-center')
         text_rect = text_surface.get_rect()
-
-        # Calculate position relative to image
         img_width, img_height = image.get_size()
         padding = 10
-
         if text_pos_key == 'top-left':
             text_rect.topleft = (padding, padding)
         elif text_pos_key == 'top-center':
@@ -692,16 +428,12 @@ def process_text_overlay(image, text_params):
             text_rect.bottomright = (img_width - padding, img_height - padding)
         else:
             text_rect.midbottom = (img_width // 2, img_height - padding)
-        
-        # Handle background color
         text_bg_color_hex = text_params.get('text_background_color')
         surface_to_return = text_surface
-        
         if text_bg_color_hex and text_bg_color_hex.strip():
             try:
                 text_bg_color_rgb = pygame.Color(text_bg_color_hex)
                 bg_padding = 5
-                
                 surface_with_background = pygame.Surface(
                     (text_surface.get_width() + 2 * bg_padding, text_surface.get_height() + 2 * bg_padding),
                     pygame.SRCALPHA
@@ -709,53 +441,161 @@ def process_text_overlay(image, text_params):
                 surface_with_background.fill(text_bg_color_rgb)
                 surface_with_background.blit(text_surface, (bg_padding, bg_padding))
                 surface_to_return = surface_with_background
-                
-                # Adjust position for background
                 text_rect.x -= bg_padding
                 text_rect.y -= bg_padding
             except ValueError as ve:
                 logger.error(f"Invalid text_background_color: {text_bg_color_hex} - {ve}")
-        
         return surface_to_return, text_rect
-        
     except Exception as e:
         logger.error(f"Error processing text overlay: {e}")
         return None, None
 
-# Function to update TV status document in CouchDB
-def update_tv_status(couchdb_base_url, tv_doc_uuid, current_slide_info):
-    status_doc_id = f"status_{tv_doc_uuid}"
-    status_doc_url = f"{couchdb_base_url}/slideshows/{status_doc_id}"
+# Function to clean up unused attachments
+def cleanup_unused_attachments():
+    """Delete attachments not referenced by the current slideshow document"""
+    while True:
+        try:
+            with cleanup_lock:
+                # Fetch the current slideshow document
+                doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+                if doc_response.status_code != 200:
+                    logger.error(f"Failed to fetch slideshow document for cleanup: {doc_response.status_code}")
+                    time.sleep(3600)  # Retry after 1 hour
+                    continue
 
-    current_rev = None
+                doc = doc_response.json()
+                # Get referenced attachment names
+                referenced_attachments = set()
+                for slide in doc.get('slides', []):
+                    if slide.get('type') != 'website':
+                        attachment_name = slide.get('name')
+                        if attachment_name:
+                            referenced_attachments.add(attachment_name)
+                    else:
+                        # For website slides, use the cached filename
+                        url = slide.get('url')
+                        if url in website_cache:
+                            attachment_name = website_cache[url].get('filename')
+                            if attachment_name:
+                                referenced_attachments.add(attachment_name)
+
+                # Get all attachments in the document
+                attachments = doc.get('_attachments', {})
+                attachment_names = set(attachments.keys())
+
+                # Identify unused attachments
+                unused_attachments = attachment_names - referenced_attachments
+
+                # Delete unused attachments
+                for attachment_name in unused_attachments:
+                    try:
+                        current_rev = doc.get('_rev')
+                        delete_url = f"{couchdb_url}/slideshows/{tv_uuid}/{attachment_name}?rev={current_rev}"
+                        delete_response = requests.delete(delete_url, timeout=10)
+                        if delete_response.status_code in [200, 202]:
+                            logger.info(f"Successfully deleted unused attachment: {attachment_name}")
+                            # Update document revision
+                            doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+                            if doc_response.status_code == 200:
+                                doc = doc_response.json()
+                            else:
+                                logger.error(f"Failed to refresh document after deletion: {doc_response.status_code}")
+                                break
+                        else:
+                            logger.error(f"Failed to delete attachment {attachment_name}: {delete_response.status_code}")
+                    except Exception as e:
+                        logger.error(f"Error deleting attachment {attachment_name}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error during attachment cleanup: {e}")
+        time.sleep(3600)  # Run every 1 hour
+
+# Start attachment cleanup thread
+threading.Thread(target=cleanup_unused_attachments, daemon=True).start()
+
+# Background thread for website capture
+def website_capture_worker():
+    """Background worker to capture website screenshots"""
+    global capture_in_progress
+    while True:
+        try:
+            # Get next URL from queue (blocks until available)
+            slide_data = capture_queue.get()
+            url = slide_data.get('url')
+            if url:
+                with capture_lock:
+                    if capture_in_progress:
+                        logger.debug(f"Skipping capture for {url}, another capture in progress")
+                        capture_queue.task_done()
+                        continue
+                    capture_in_progress = True
+                
+                try:
+                    logger.info(f"Pre-capturing website: {url}")
+                    surface, screenshot_data = capture_website(url, timeout=15)
+                    if surface and screenshot_data:
+                        filename = upload_website_screenshot(url, screenshot_data)
+                        website_cache[url] = {
+                            'surface': surface,
+                            'filename': filename or f"website_{int(time.time())}.png",
+                            'timestamp': time.time()
+                        }
+                        logger.info(f"Successfully pre-captured website: {url}")
+                    else:
+                        logger.warning(f"Pre-capture failed for website: {url}")
+                finally:
+                    with capture_lock:
+                        capture_in_progress = False
+                    capture_queue.task_done()
+        except Exception as e:
+            logger.error(f"Error in website capture worker: {e}")
+            with capture_lock:
+                capture_in_progress = False
+            capture_queue.task_done()
+        time.sleep(1)
+
+# Start website capture worker thread
+threading.Thread(target=website_capture_worker, daemon=True).start()
+
+# Function to queue website for pre-capture
+def queue_website_capture(slides_list, current_index):
+    """Queue upcoming website slide for pre-capture, 2 slides ahead"""
     try:
-        response = requests.get(status_doc_url, timeout=5)
+        with capture_lock:
+            # Only queue if no capture is in progress and queue is empty
+            if not capture_in_progress and capture_queue.empty():
+                look_ahead = 2
+                next_index = (current_index + look_ahead) % len(slides_list)
+                if next_index < len(slides_list):  # Ensure valid index
+                    next_slide = slides_list[next_index]
+                    if next_slide.get('type') == 'website':
+                        url = next_slide.get('url')
+                        if url:
+                            # Queue website for capture
+                            capture_queue.put({'url': url})
+                            logger.info(f"Queued website for capture (slide {next_index}): {url}")
+    except Exception as e:
+        logger.error(f"Error queuing website capture: {e}")
+
+# Function to fetch the slideshow document from CouchDB
+def fetch_document():
+    try:
+        url = f"{couchdb_url}/slideshows/{tv_uuid}"
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+        session.mount('http://', HTTPAdapter(max_retries=retries))
+        response = session.get(url, timeout=10)
         if response.status_code == 200:
-            current_rev = response.json().get('_rev')
-        elif response.status_code != 404:
-            logger.warning(f"Error fetching status doc {status_doc_id}: {response.status_code} - {response.text}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error fetching status doc {status_doc_id}: {e}")
-
-    status_data = {
-        "type": "tv_status",
-        "tv_uuid": tv_doc_uuid,
-        "current_slide_id": current_slide_info['id'],
-        "current_slide_filename": current_slide_info['filename'],
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    if current_rev:
-        status_data['_rev'] = current_rev
-
-    try:
-        headers = {'Content-Type': 'application/json'}
-        response = requests.put(status_doc_url, json=status_data, headers=headers, timeout=5)
-        if response.status_code not in [200, 201]:
-            logger.error(f"Error updating status doc {status_doc_id}: {response.status_code} - {response.text}")
+            logger.info("Successfully fetched document")
+            return response.json()
+        elif response.status_code == 404:
+            logger.warning("Document not found")
+            return None
         else:
-            logger.info(f"Successfully updated status for {tv_doc_uuid} to slide {current_slide_info['filename']}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error updating status doc {status_doc_id}: {e}")
+            raise Exception(f"HTTP error {response.status_code}")
+    except requests.RequestException as e:
+        logger.error(f"Error fetching document: {e}")
+        return None
 
 # Background thread to watch for changes in CouchDB
 def watch_changes():
@@ -767,32 +607,30 @@ def watch_changes():
                 "heartbeat": 10000,
                 "doc_ids": json.dumps([tv_uuid])
             }
-            response = requests.get(url, params=params, stream=True, timeout=10)
+            session = requests.Session()
+            retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+            session.mount('http://', HTTPAdapter(max_retries=retries))
+            response = session.get(url, params=params, stream=True, timeout=30)
             for line in response.iter_lines():
                 if line:
-                    change = json.loads(line)
+                    change = json.loads(line.decode('utf-8'))
                     if 'id' in change and change['id'] == tv_uuid:
                         logger.info("Change detected, setting need_refetch")
                         need_refetch.set()
         except requests.RequestException as e:
             logger.error(f"Error in changes feed: {e}")
-            time.sleep(30)
+            time.sleep(30)  # Wait before retrying
 
 # Start the background thread to watch for changes
 threading.Thread(target=watch_changes, daemon=True).start()
-
-FADE_STEPS = 30
 
 # Function to process slides from document
 def process_slides_from_doc(doc):
     """Process slides from document and return processed slide list"""
     processed_slides = []
-    
     for slide_doc in doc.get('slides', []):
         content_type = slide_doc.get('type', 'image')
-        
         if content_type == 'video':
-            # Handle video slides
             video_cap, temp_file = process_video(slide_doc['name'])
             if video_cap:
                 processed_slides.append({
@@ -813,7 +651,6 @@ def process_slides_from_doc(doc):
                     'scroll_text': slide_doc.get('scroll_text', False)
                 })
         else:
-            # Handle image and website slides
             text_params = {
                 'text': slide_doc.get('text'),
                 'text_color': slide_doc.get('text_color'),
@@ -821,9 +658,7 @@ def process_slides_from_doc(doc):
                 'text_position': slide_doc.get('text_position'),
                 'text_background_color': slide_doc.get('text_background_color', None)
             }
-            
             image_surface, text_surface, text_rect, content_name = fetch_content(slide_doc, text_params)
-            
             if image_surface:
                 processed_slides.append({
                     'type': content_type,
@@ -836,10 +671,43 @@ def process_slides_from_doc(doc):
                     'text_params': text_params,
                     'transition_time': slide_doc.get('transition_time', 0),
                     'scroll_text': slide_doc.get('scroll_text', False),
-                    'url': slide_doc.get('url')  # For website slides
+                    'url': slide_doc.get('url')
                 })
-    
     return processed_slides
+
+# Function to update TV status document in CouchDB
+def update_tv_status(couchdb_base_url, tv_doc_uuid, current_slide_info):
+    status_doc_id = f"status_{tv_doc_uuid}"
+    status_doc_url = f"{couchdb_base_url}/slideshows/{status_doc_id}"
+    current_rev = None
+    try:
+        response = requests.get(status_doc_url, timeout=5)
+        if response.status_code == 200:
+            current_rev = response.json().get('_rev')
+        elif response.status_code != 404:
+            logger.warning(f"Error fetching status doc {status_doc_id}: {response.status_code} - {response.text}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error fetching status doc {status_doc_id}: {e}")
+    status_data = {
+        "type": "tv_status",
+        "tv_uuid": tv_doc_uuid,
+        "current_slide_id": current_slide_info['id'],
+        "current_slide_filename": current_slide_info['filename'],
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    if current_rev:
+        status_data['_rev'] = current_rev
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.put(status_doc_url, json=status_data, headers=headers, timeout=5)
+        if response.status_code not in [200, 201]:
+            logger.error(f"Error updating status doc {status_doc_id}: {response.status_code} - {response.text}")
+        else:
+            logger.info(f"Successfully updated status for {tv_doc_uuid} to slide {current_slide_info['filename']}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error updating status doc {status_doc_id}: {e}")
+
+FADE_STEPS = 30
 
 # Main loop
 while True:
@@ -856,6 +724,7 @@ while True:
                 slides = process_slides_from_doc(doc)
                 if slides:
                     state = "slideshow"
+                    current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
                     update_tv_status(couchdb_url, tv_uuid, first_slide_info)
                 else:
@@ -879,83 +748,81 @@ while True:
                 slides = process_slides_from_doc(doc)
                 if slides:
                     state = "slideshow"
+                    current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
                     update_tv_status(couchdb_url, tv_uuid, first_slide_info)
             time.sleep(1)
     elif state == "slideshow":
-        for slide_index, slide_data in enumerate(slides):
-            # Queue upcoming websites for pre-capture
+        slide_index = current_slide_index
+        while slide_index < len(slides):
+            slide_data = slides[slide_index]
             queue_website_capture(slides, slide_index)
-            
             current_display_slide_info = {'id': slide_data['id'], 'filename': slide_data['filename']}
             update_tv_status(couchdb_url, tv_uuid, current_display_slide_info)
-
             if slide_data['type'] == 'video':
-                # Handle video playback
                 video_cap = slide_data['video_cap']
                 start_time = time.time()
                 slide_duration = slide_data.get('duration', 10)
-                
                 while time.time() - start_time < slide_duration:
                     if need_refetch.is_set():
-                        break
-                        
+                        need_refetch.clear()
+                        doc = fetch_document()
+                        if doc:
+                            new_slides = process_slides_from_doc(doc)
+                            if new_slides:
+                                slides = new_slides
+                                # Resume from current slide index, or last valid index
+                                current_slide_index = min(slide_index, len(slides) - 1)
+                                slide_index = current_slide_index
+                                slide_data = slides[slide_index]
+                                start_time = time.time()
+                                slide_duration = slide_data.get('duration', 10)
+                                if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
+                                    slide_duration = 10
+                                video_cap = slide_data.get('video_cap')
+                                continue
+                            else:
+                                state = "default"
+                                break
+                        else:
+                            state = "default"
+                            break
                     ret, frame = video_cap.read()
                     if not ret:
-                        # Loop video
                         video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         ret, frame = video_cap.read()
                         if not ret:
                             break
-                    
-                    # Convert frame to pygame surface
                     surface = cv2_to_pygame(frame)
                     if surface:
-                        # Scale to fit screen
                         frame_width, frame_height = surface.get_size()
                         width_ratio = screen_width / frame_width
                         height_ratio = screen_height / frame_height
                         scale_ratio = min(width_ratio, height_ratio)
-                        
                         new_width = int(frame_width * scale_ratio)
                         new_height = int(frame_height * scale_ratio)
-                        
                         scaled_surface = pygame.transform.smoothscale(surface, (new_width, new_height))
-                        
-                        # Center on screen
                         center_x = (screen_width - new_width) // 2
                         center_y = (screen_height - new_height) // 2
-                        
                         screen.fill((0, 0, 0))
                         screen.blit(scaled_surface, (center_x, center_y))
-                        
-                        # Add text overlay if needed
                         if slide_data.get('text_params') and slide_data['text_params'].get('text'):
                             text_params = slide_data['text_params']
-                            
-                            # Check if we need to update datetime dynamically
                             if '{datetime}' in text_params.get('text', ''):
-                                # For video, we need a temporary surface to process text overlay
                                 temp_surface = pygame.Surface((scaled_surface.get_width(), scaled_surface.get_height()), pygame.SRCALPHA)
                                 current_text_surface, current_text_rect = process_text_overlay(temp_surface, text_params)
                                 if current_text_surface and current_text_rect:
                                     text_surface = current_text_surface
                                     text_rect = current_text_rect
                                 else:
-                                    # Fallback to pre-generated surface
                                     text_surface = slide_data.get('text_surface')
                                     text_rect = slide_data.get('text_rect')
                             else:
-                                # Use pre-generated surface for static text
                                 text_surface = slide_data.get('text_surface')
                                 text_rect = slide_data.get('text_rect')
-                            
                             if text_surface and text_rect:
                                 screen.blit(text_surface, (center_x + text_rect.left, center_y + text_rect.top))
-                        
                         pygame.display.flip()
-                    
-                    # Check for events
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
                             pygame.quit()
@@ -964,104 +831,95 @@ while True:
                             if event.key == pygame.K_ESCAPE:
                                 pygame.quit()
                                 sys.exit()
-                    
-                    time.sleep(0.03)  # ~30 FPS
-                
-                # Clean up video
+                    time.sleep(0.03)
                 video_cap.release()
                 if slide_data.get('temp_file'):
                     try:
                         os.unlink(slide_data['temp_file'])
                     except:
                         pass
-                        
             else:
-                # Handle image/website slides (existing logic)
                 img_width, img_height = slide_data['image'].get_size()
                 center_x = (screen_width - img_width) // 2
                 center_y = (screen_height - img_height) // 2
-
                 scroll_x = screen_width
-                
-                # Fade-In Logic
                 incoming_transition_duration_ms = slide_data.get('transition_time', 0)
                 if incoming_transition_duration_ms > 0:
                     delay_per_step = (incoming_transition_duration_ms / FADE_STEPS) / 1000.0
-                    
                     slide_render_surface = pygame.Surface((img_width, img_height), pygame.SRCALPHA)
                     slide_render_surface.blit(slide_data['image'], (0,0))
                     if slide_data.get('text_surface') and not slide_data.get('scroll_text'):
                         slide_render_surface.blit(slide_data['text_surface'], slide_data['text_rect'])
-
                     for alpha_step in range(FADE_STEPS + 1):
-                        if need_refetch.is_set(): break
-                        
+                        if need_refetch.is_set():
+                            break
                         alpha_value = int((alpha_step / FADE_STEPS) * 255)
                         slide_render_surface.set_alpha(alpha_value)
-                        
                         screen.fill((0,0,0))
                         screen.blit(slide_render_surface, (center_x, center_y))
                         pygame.display.flip()
                         time.sleep(delay_per_step)
-                    if need_refetch.is_set(): continue
-
+                    if need_refetch.is_set():
+                        need_refetch.clear()
+                        doc = fetch_document()
+                        if doc:
+                            new_slides = process_slides_from_doc(doc)
+                            if new_slides:
+                                slides = new_slides
+                                current_slide_index = min(slide_index, len(slides) - 1)
+                                slide_index = current_slide_index
+                                slide_data = slides[slide_index]
+                                continue
+                            else:
+                                state = "default"
+                                break
+                        else:
+                            state = "default"
+                            break
                 start_time = time.time()
                 slide_duration = slide_data.get('duration', 10)
                 if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
                     logger.warning(f"Invalid duration for slide {slide_data.get('filename', 'Unknown')}: '{slide_duration}'. Defaulting to 10s.")
                     slide_duration = 10
-
-                # Main display loop for the slide
                 while time.time() - start_time < slide_duration:
                     if need_refetch.is_set():
                         need_refetch.clear()
                         doc = fetch_document()
                         if doc:
                             new_slides = process_slides_from_doc(doc)
-                            slides = new_slides
-                            if not slides:
-                                state = "default"
-                            else:
-                                first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
-                                update_tv_status(couchdb_url, tv_uuid, first_slide_info)
-                                scroll_x = screen_width
-                                slide_data = slides[0]
+                            if new_slides:
+                                slides = new_slides
+                                current_slide_index = min(slide_index, len(slides) - 1)
+                                slide_index = current_slide_index
+                                slide_data = slides[slide_index]
                                 start_time = time.time()
                                 slide_duration = slide_data.get('duration', 10)
                                 if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
                                     slide_duration = 10
+                                continue
+                            else:
+                                state = "default"
+                                break
                         else:
                             state = "default"
-                        
-                        if state == "default":
                             break
-                    
                     if state == "default":
                         break
-
                     screen.fill((0, 0, 0))
                     screen.blit(slide_data['image'], (center_x, center_y))
-
-                    # Render text
                     if slide_data.get('text_params') and slide_data['text_params'].get('text'):
                         text_params = slide_data['text_params']
-                        
-                        # Check if we need to update datetime dynamically
                         if '{datetime}' in text_params.get('text', ''):
-                            # Regenerate text surface with current time
                             current_text_surface, current_text_rect = process_text_overlay(slide_data['image'], text_params)
                             if current_text_surface and current_text_rect:
                                 text_surface = current_text_surface
                                 original_text_rect = current_text_rect
                             else:
-                                # Fallback to pre-generated surface
                                 text_surface = slide_data.get('text_surface')
                                 original_text_rect = slide_data.get('text_rect')
                         else:
-                            # Use pre-generated surface for static text
                             text_surface = slide_data.get('text_surface')
                             original_text_rect = slide_data.get('text_rect')
-                        
                         if text_surface and original_text_rect:
                             if slide_data.get('scroll_text'):
                                 screen.blit(text_surface, (scroll_x, center_y + original_text_rect.top))
@@ -1070,9 +928,7 @@ while True:
                                     scroll_x = screen_width
                             else:
                                 screen.blit(text_surface, (center_x + original_text_rect.left, center_y + original_text_rect.top))
-                    
                     pygame.display.flip()
-                    
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
                             pygame.quit()
@@ -1081,31 +937,12 @@ while True:
                             if event.key == pygame.K_ESCAPE:
                                 pygame.quit()
                                 sys.exit()
-                    
                     time.sleep(0.03)
-
-                if need_refetch.is_set(): break
-
-                # Fade-Out Logic
-                outgoing_transition_duration_ms = slide_data.get('transition_time', 0)
-                if outgoing_transition_duration_ms > 0 and slides and not need_refetch.is_set():
-                    current_screen_snapshot = screen.copy()
-                    delay_per_step = (outgoing_transition_duration_ms / FADE_STEPS) / 1000.0
-                    
-                    for alpha_step in range(FADE_STEPS, -1, -1):
-                        if need_refetch.is_set(): break
-                        
-                        alpha_value = int((alpha_step / FADE_STEPS) * 255)
-                        current_screen_snapshot.set_alpha(alpha_value)
-                        
-                        screen.fill((0,0,0))
-                        screen.blit(current_screen_snapshot, (0,0))
-                        pygame.display.flip()
-                        time.sleep(delay_per_step)
-                    
-                    if not need_refetch.is_set():
-                        screen.fill((0,0,0))
-                        pygame.display.flip()
-
-            if state == "default" or need_refetch.is_set():
+                if need_refetch.is_set():
+                    continue
+            if state == "default":
                 break
+            slide_index += 1
+            current_slide_index = slide_index % len(slides)
+            if slide_index >= len(slides):
+                slide_index = 0
