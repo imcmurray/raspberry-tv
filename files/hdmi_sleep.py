@@ -17,14 +17,15 @@ def is_raspberry_pi_os():
     return os.path.exists('/etc/rpi-issue')
 
 def set_hdmi_power(on):
-    """Turn HDMI output on or off."""
+    """Turn slideshow HDMI output (HDMI1) on or off, leave console HDMI (HDMI0) always on."""
     if is_raspberry_pi_os():
-        cmd = "vcgencmd display_power {}".format(1 if on else 0)
+        # Control only HDMI1 (slideshow display), leave HDMI0 (console) always on
+        cmd = "vcgencmd display_power {} 2".format(1 if on else 0)
         subprocess.run(cmd, shell=True)
     else:
         # On non-Pi systems (like Ubuntu), log the action but don't attempt vcgencmd
         action = "on" if on else "off"
-        print(f"Would turn HDMI {action} (vcgencmd not available on this OS)")
+        print(f"Would turn slideshow HDMI {action} (vcgencmd not available on this OS)")
 
 # Main loop
 while True:

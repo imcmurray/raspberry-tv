@@ -20,13 +20,25 @@
     - target_os == "raspios"
     - item.stat.exists
 
-- name: Set HDMI group and mode
+- name: Configure dual HDMI setup
   lineinfile:
     path: "{{ boot_config_path }}"
     line: '{{ item }}'
   loop:
-    - 'hdmi_group=1'
-    - 'hdmi_mode=16'
+    - '# Dual HDMI Configuration'
+    - '# HDMI0 (primary) - Console/SSH access'
+    - 'hdmi_group:0=1'
+    - 'hdmi_mode:0=16'
+    - '# HDMI1 (secondary) - Slideshow display' 
+    - 'hdmi_group:1=1'
+    - 'hdmi_mode:1=16'
+    - '# Enable both HDMI outputs'
+    - 'hdmi_force_hotplug:0=1'
+    - 'hdmi_force_hotplug:1=1'
+    - '# Use legacy graphics for separate framebuffers'
+    - 'dtoverlay=vc4-fkms-v3d'
+    - '# Disable KMS overlays to get separate framebuffers'
+    - '#dtoverlay=vc4-kms-v3d'
   notify: reboot
   when: 
     - target_os == "raspios"

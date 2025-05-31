@@ -77,7 +77,8 @@ if is_ubuntu():
     time.sleep(2)
 else:
     # Raspberry Pi OS can use framebuffer
-    os.putenv('SDL_FBDEV', '/dev/fb0')
+    # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
+    os.putenv('SDL_FBDEV', '/dev/fb1')
     os.putenv('SDL_VIDEODRIVER', 'fbcon')
     os.putenv('SDL_NOMOUSE', '1')
 
