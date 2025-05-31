@@ -22,6 +22,7 @@ from PIL import Image
 from queue import Queue
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from contextlib import contextmanager
 
 # Define Configuration Path
 CONFIG_FILE_PATH = '/etc/slideshow.conf'
@@ -79,6 +80,15 @@ capture_in_progress = False  # Flag to track ongoing capture
 current_slide_index = 0  # Track current slide index
 cleanup_lock = threading.Lock()  # Lock for attachment cleanup
 
+# Text rendering cache for performance optimization
+text_cache = {}  # Cache for rendered text surfaces
+last_datetime_minute = None  # Track last rendered datetime minute
+
+# Scrolling performance variables
+scroll_speed_pixels_per_second = 100  # Configurable scroll speed
+last_frame_time = 0  # Track frame timing for smooth scrolling
+scroll_pause_duration = 1.0  # Pause duration between scroll cycles (seconds)
+
 # Function to capture website screenshot
 def capture_website(url, timeout=20):
     """Capture website screenshot and return pygame surface"""
@@ -109,7 +119,10 @@ def capture_website(url, timeout=20):
         except Exception as chrome_error:
             logger.error(f"Failed to initialize Chrome driver: {chrome_error}")
             logger.error("Ensure Chromium/Chrome and ChromeDriver are installed:")
-            logger.error("  sudo pacman -S chromium chromedriver python-selenium")
+            logger.error("  Arch Linux: sudo pacman -S chromium chromedriver python-selenium")
+            logger.error("  Ubuntu/Debian: sudo apt install chromium-browser chromium-chromedriver python3-selenium")
+            logger.error("  RHEL/CentOS: sudo dnf install chromium chromedriver python3-selenium")
+            logger.error("  Or install via pip: pip install selenium")
             return None, None
 
         # Set timeouts
@@ -240,8 +253,8 @@ def capture_website(url, timeout=20):
         if driver:
             try:
                 driver.quit()
-            except:
-                pass
+            except Exception as cleanup_error:
+                logger.warning(f"Driver cleanup failed during exception handling: {cleanup_error}")
         return None, None
 
 # Function to upload website screenshot to CouchDB
@@ -277,27 +290,64 @@ def upload_website_screenshot(url, screenshot_data):
 # Function to handle video content
 def process_video(video_name):
     """Process video file and return video capture object"""
+    temp_file_path = None
     try:
         url = f"{couchdb_url}/slideshows/{tv_uuid}/{video_name}"
         headers = {'Cache-Control': 'no-store'}
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-            temp_file.write(response.content)
-            temp_file.close()
-            cap = cv2.VideoCapture(temp_file.name)
+            try:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+            finally:
+                temp_file.close()
+            
+            cap = cv2.VideoCapture(temp_file_path)
             if cap.isOpened():
-                return cap, temp_file.name
+                return cap, temp_file_path
             else:
                 logger.error(f"Failed to open video: {video_name}")
-                os.unlink(temp_file.name)
+                try:
+                    os.unlink(temp_file_path)
+                except OSError as cleanup_error:
+                    logger.warning(f"Failed to cleanup temp file {temp_file_path}: {cleanup_error}")
                 return None, None
         else:
             logger.error(f"HTTP error {response.status_code} fetching video {video_name}")
             return None, None
     except Exception as e:
         logger.error(f"Error processing video {video_name}: {e}")
+        # Cleanup temp file if it was created
+        if temp_file_path:
+            try:
+                os.unlink(temp_file_path)
+            except OSError as cleanup_error:
+                logger.warning(f"Failed to cleanup temp file after error {temp_file_path}: {cleanup_error}")
         return None, None
+
+# Context manager for video resources
+@contextmanager
+def video_resource_manager(video_cap, temp_file_path):
+    """Context manager to ensure proper cleanup of video resources"""
+    try:
+        yield video_cap, temp_file_path
+    finally:
+        # Always cleanup video capture
+        if video_cap:
+            try:
+                video_cap.release()
+                logger.debug("Video capture released successfully")
+            except Exception as cap_error:
+                logger.warning(f"Failed to release video capture: {cap_error}")
+        
+        # Always cleanup temp file
+        if temp_file_path:
+            try:
+                os.unlink(temp_file_path)
+                logger.debug(f"Successfully cleaned up temp video file: {temp_file_path}")
+            except OSError as file_error:
+                logger.warning(f"Failed to cleanup temp video file {temp_file_path}: {file_error}")
 
 # Function to convert OpenCV frame to pygame surface
 def cv2_to_pygame(cv2_frame):
@@ -388,26 +438,106 @@ def fetch_content(slide_doc, text_params=None):
         return image, text_surface, text_rect, content_name
     return image, None, None, content_name
 
-# Function to process text overlay
-def process_text_overlay(image, text_params):
-    """Process text overlay for any content type"""
+# Function to validate and sanitize slide duration
+def validate_slide_duration(duration, slide_name="Unknown", default_duration=10):
+    """Validate slide duration and return safe value"""
+    try:
+        if duration is None:
+            return default_duration
+        
+        # Convert to float if possible
+        if isinstance(duration, str):
+            duration = float(duration)
+        
+        if not isinstance(duration, (int, float)):
+            logger.warning(f"Invalid duration type for slide '{slide_name}': {type(duration).__name__}. Using default {default_duration}s.")
+            return default_duration
+        
+        if duration <= 0:
+            logger.warning(f"Invalid duration value for slide '{slide_name}': {duration}. Using default {default_duration}s.")
+            return default_duration
+        
+        if duration > 300:  # Prevent extremely long durations (5 minutes max)
+            logger.warning(f"Duration too long for slide '{slide_name}': {duration}s. Capping at 300s.")
+            return 300
+        
+        return duration
+        
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error validating duration for slide '{slide_name}': {e}. Using default {default_duration}s.")
+        return default_duration
+
+# Function to calculate optimal scroll speed based on content
+def calculate_scroll_speed(text_width, screen_width, base_speed=100):
+    """Calculate optimal scroll speed based on text length and screen size"""
+    # Adjust speed based on text length relative to screen width
+    ratio = text_width / screen_width
+    if ratio > 3:  # Very long text
+        return base_speed * 1.5
+    elif ratio > 2:  # Long text
+        return base_speed * 1.2
+    elif ratio < 0.5:  # Short text
+        return base_speed * 0.8
+    return base_speed
+
+# Function to get cached or render text surface
+def get_cached_text_surface(image, text_params, force_refresh=False):
+    """Get cached text surface or render new one if needed"""
+    global last_datetime_minute, text_cache
+    
     try:
         text_content = text_params['text']
-        if '{datetime}' in text_content:
+        has_datetime = '{datetime}' in text_content
+        
+        # Generate cache key based on text parameters
+        cache_key = (
+            text_content,
+            text_params.get('text_size', 'medium'),
+            text_params.get('text_color', '#FFFFFF'),
+            text_params.get('text_position', 'bottom-center'),
+            text_params.get('text_background_color', ''),
+            image.get_size()  # Include image size for positioning
+        )
+        
+        # Check if we need to refresh datetime content
+        current_minute = None
+        if has_datetime:
+            current_time = datetime.now()
+            current_minute = (current_time.year, current_time.month, current_time.day, 
+                            current_time.hour, current_time.minute)
+            
+            # Force refresh if minute has changed
+            if last_datetime_minute != current_minute:
+                force_refresh = True
+                last_datetime_minute = current_minute
+        
+        # Return cached surface if available and no refresh needed
+        if not force_refresh and cache_key in text_cache:
+            cached_surface, cached_rect = text_cache[cache_key]
+            return cached_surface, cached_rect
+        
+        # Render new text surface
+        if has_datetime:
             text_content = text_content.replace('{datetime}', datetime.now().strftime("%Y-%m-%d %H:%M"))
+        
         font_size_map = {"small": 24, "medium": 36, "large": 48}
         actual_font_size = font_size_map.get(text_params.get('text_size', 'medium'), 36)
+        
         try:
             font = pygame.font.Font("freesansbold.ttf", actual_font_size)
         except IOError:
             font = pygame.font.Font(None, actual_font_size)
+        
         text_color_hex = text_params.get('text_color', '#FFFFFF')
         text_color_rgb = pygame.Color(text_color_hex)
         text_surface = font.render(text_content, True, text_color_rgb)
+        
+        # Calculate text position
         text_pos_key = text_params.get('text_position', 'bottom-center')
         text_rect = text_surface.get_rect()
         img_width, img_height = image.get_size()
         padding = 10
+        
         if text_pos_key == 'top-left':
             text_rect.topleft = (padding, padding)
         elif text_pos_key == 'top-center':
@@ -428,8 +558,11 @@ def process_text_overlay(image, text_params):
             text_rect.bottomright = (img_width - padding, img_height - padding)
         else:
             text_rect.midbottom = (img_width // 2, img_height - padding)
+        
+        # Apply background if specified
         text_bg_color_hex = text_params.get('text_background_color')
         surface_to_return = text_surface
+        
         if text_bg_color_hex and text_bg_color_hex.strip():
             try:
                 text_bg_color_rgb = pygame.Color(text_bg_color_hex)
@@ -445,73 +578,189 @@ def process_text_overlay(image, text_params):
                 text_rect.y -= bg_padding
             except ValueError as ve:
                 logger.error(f"Invalid text_background_color: {text_bg_color_hex} - {ve}")
+        
+        # Cache the result (limit cache size to prevent memory issues)
+        if len(text_cache) > 50:  # Clear cache if it gets too large
+            text_cache.clear()
+        text_cache[cache_key] = (surface_to_return, text_rect)
+        
         return surface_to_return, text_rect
+        
     except Exception as e:
-        logger.error(f"Error processing text overlay: {e}")
+        logger.error(f"Error processing cached text overlay: {e}")
         return None, None
 
-# Function to clean up unused attachments
+# Function to process text overlay (legacy support)
+def process_text_overlay(image, text_params):
+    """Process text overlay for any content type (legacy wrapper)"""
+    return get_cached_text_surface(image, text_params, force_refresh=True)
+
+# Function to get referenced attachments from document
+def get_referenced_attachments(doc):
+    """Extract set of attachment names that are currently referenced"""
+    referenced_attachments = set()
+    for slide in doc.get('slides', []):
+        if slide.get('type') != 'website':
+            attachment_name = slide.get('name')
+            if attachment_name:
+                referenced_attachments.add(attachment_name)
+        else:
+            # For website slides, use the cached filename
+            url = slide.get('url')
+            if url in website_cache:
+                attachment_name = website_cache[url].get('filename')
+                if attachment_name:
+                    referenced_attachments.add(attachment_name)
+    return referenced_attachments
+
+# Function to perform immediate cleanup (called when slides change)
+def cleanup_unused_attachments_immediate():
+    """Immediate cleanup of unused attachments when slides are updated"""
+    try:
+        with cleanup_lock:
+            logger.info("Starting immediate attachment cleanup...")
+            
+            # Fetch current document
+            doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+            if doc_response.status_code != 200:
+                logger.warning(f"Failed to fetch document for immediate cleanup: {doc_response.status_code}")
+                return
+
+            doc = doc_response.json()
+            referenced_attachments = get_referenced_attachments(doc)
+            
+            # Get all attachments
+            attachments = doc.get('_attachments', {})
+            attachment_names = set(attachments.keys())
+            
+            # Find unused attachments
+            unused_attachments = list(attachment_names - referenced_attachments)
+            
+            if not unused_attachments:
+                logger.debug("No unused attachments found during immediate cleanup")
+                return
+            
+            logger.info(f"Found {len(unused_attachments)} unused attachments for immediate cleanup")
+            
+            # Delete unused attachments in batch (up to 5 at once to avoid overwhelming)
+            batch_size = min(5, len(unused_attachments))
+            for i in range(0, len(unused_attachments), batch_size):
+                batch = unused_attachments[i:i + batch_size]
+                _delete_attachment_batch(batch)
+                
+    except Exception as e:
+        logger.error(f"Error during immediate attachment cleanup: {e}")
+
+# Function to delete a batch of attachments efficiently
+def _delete_attachment_batch(attachment_names):
+    """Delete a batch of attachments efficiently"""
+    if not attachment_names:
+        return
+    
+    try:
+        # Get fresh document revision for batch
+        doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
+        if doc_response.status_code != 200:
+            logger.error(f"Failed to get document for batch deletion: {doc_response.status_code}")
+            return
+        
+        doc = doc_response.json()
+        current_rev = doc.get('_rev')
+        
+        # Delete attachments in this batch
+        deleted_count = 0
+        for attachment_name in attachment_names:
+            try:
+                delete_url = f"{couchdb_url}/slideshows/{tv_uuid}/{attachment_name}?rev={current_rev}"
+                delete_response = requests.delete(delete_url, timeout=10)
+                
+                if delete_response.status_code in [200, 202]:
+                    logger.info(f"Successfully deleted unused attachment: {attachment_name}")
+                    deleted_count += 1
+                    # Update revision for next deletion in batch
+                    current_rev = delete_response.json().get('rev', current_rev)
+                else:
+                    logger.warning(f"Failed to delete attachment {attachment_name}: {delete_response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Error deleting attachment {attachment_name}: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"Batch deletion completed: {deleted_count}/{len(attachment_names)} attachments deleted")
+            
+    except Exception as e:
+        logger.error(f"Error during batch attachment deletion: {e}")
+
+# Function to clean up unused attachments (periodic background task)
 def cleanup_unused_attachments():
-    """Delete attachments not referenced by the current slideshow document"""
+    """Periodic cleanup of all unused attachments"""
     while True:
         try:
             with cleanup_lock:
+                logger.info("Starting periodic attachment cleanup...")
+                
                 # Fetch the current slideshow document
                 doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
                 if doc_response.status_code != 200:
                     logger.error(f"Failed to fetch slideshow document for cleanup: {doc_response.status_code}")
-                    time.sleep(3600)  # Retry after 1 hour
+                    time.sleep(900)  # Retry after 15 minutes
                     continue
 
                 doc = doc_response.json()
-                # Get referenced attachment names
-                referenced_attachments = set()
-                for slide in doc.get('slides', []):
-                    if slide.get('type') != 'website':
-                        attachment_name = slide.get('name')
-                        if attachment_name:
-                            referenced_attachments.add(attachment_name)
-                    else:
-                        # For website slides, use the cached filename
-                        url = slide.get('url')
-                        if url in website_cache:
-                            attachment_name = website_cache[url].get('filename')
-                            if attachment_name:
-                                referenced_attachments.add(attachment_name)
-
+                referenced_attachments = get_referenced_attachments(doc)
+                
                 # Get all attachments in the document
                 attachments = doc.get('_attachments', {})
                 attachment_names = set(attachments.keys())
 
                 # Identify unused attachments
-                unused_attachments = attachment_names - referenced_attachments
-
-                # Delete unused attachments
-                for attachment_name in unused_attachments:
-                    try:
-                        current_rev = doc.get('_rev')
-                        delete_url = f"{couchdb_url}/slideshows/{tv_uuid}/{attachment_name}?rev={current_rev}"
-                        delete_response = requests.delete(delete_url, timeout=10)
-                        if delete_response.status_code in [200, 202]:
-                            logger.info(f"Successfully deleted unused attachment: {attachment_name}")
-                            # Update document revision
-                            doc_response = requests.get(f"{couchdb_url}/slideshows/{tv_uuid}", timeout=10)
-                            if doc_response.status_code == 200:
-                                doc = doc_response.json()
-                            else:
-                                logger.error(f"Failed to refresh document after deletion: {doc_response.status_code}")
-                                break
-                        else:
-                            logger.error(f"Failed to delete attachment {attachment_name}: {delete_response.status_code}")
-                    except Exception as e:
-                        logger.error(f"Error deleting attachment {attachment_name}: {e}")
+                unused_attachments = list(attachment_names - referenced_attachments)
+                
+                if not unused_attachments:
+                    logger.debug("No unused attachments found during periodic cleanup")
+                else:
+                    logger.info(f"Found {len(unused_attachments)} unused attachments for periodic cleanup")
+                    
+                    # Sort by size (delete larger files first to free more space)
+                    def get_attachment_size(name):
+                        return attachments.get(name, {}).get('length', 0)
+                    
+                    unused_attachments.sort(key=get_attachment_size, reverse=True)
+                    
+                    # Delete all unused attachments in batches
+                    batch_size = 10  # Larger batches for periodic cleanup
+                    total_deleted = 0
+                    
+                    for i in range(0, len(unused_attachments), batch_size):
+                        batch = unused_attachments[i:i + batch_size]
+                        batch_start_count = total_deleted
+                        _delete_attachment_batch(batch)
+                        # Assume successful deletion for counting (logged in batch function)
+                        total_deleted += len(batch)
+                        
+                        # Brief pause between batches to avoid overwhelming CouchDB
+                        if i + batch_size < len(unused_attachments):
+                            time.sleep(1)
+                    
+                    logger.info(f"Periodic cleanup completed: processed {len(unused_attachments)} unused attachments")
 
         except Exception as e:
-            logger.error(f"Error during attachment cleanup: {e}")
-        time.sleep(3600)  # Run every 1 hour
+            logger.error(f"Error during periodic attachment cleanup: {e}")
+        
+        # Run every 15 minutes instead of 1 hour
+        time.sleep(900)  # 15 minutes = 900 seconds
 
 # Start attachment cleanup thread
 threading.Thread(target=cleanup_unused_attachments, daemon=True).start()
+
+# Perform initial cleanup on startup (after a brief delay to let system stabilize)
+def startup_cleanup():
+    """Perform cleanup on system startup"""
+    time.sleep(30)  # Wait 30 seconds for system to stabilize
+    logger.info("Performing startup attachment cleanup...")
+    cleanup_unused_attachments_immediate()
+
+threading.Thread(target=startup_cleanup, daemon=True).start()
 
 # Background thread for website capture
 def website_capture_worker():
@@ -566,14 +815,14 @@ def queue_website_capture(slides_list, current_index):
             if not capture_in_progress and capture_queue.empty():
                 look_ahead = 2
                 next_index = (current_index + look_ahead) % len(slides_list)
-                if next_index < len(slides_list):  # Ensure valid index
-                    next_slide = slides_list[next_index]
-                    if next_slide.get('type') == 'website':
-                        url = next_slide.get('url')
-                        if url:
-                            # Queue website for capture
-                            capture_queue.put({'url': url})
-                            logger.info(f"Queued website for capture (slide {next_index}): {url}")
+                # Modulo operation already ensures valid index, no additional check needed
+                next_slide = slides_list[next_index]
+                if next_slide.get('type') == 'website':
+                    url = next_slide.get('url')
+                    if url:
+                        # Queue website for capture
+                        capture_queue.put({'url': url})
+                        logger.info(f"Queued website for capture (slide {next_index}): {url}")
     except Exception as e:
         logger.error(f"Error queuing website capture: {e}")
 
@@ -585,16 +834,38 @@ def fetch_document():
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
         session.mount('http://', HTTPAdapter(max_retries=retries))
         response = session.get(url, timeout=10)
+        
         if response.status_code == 200:
             logger.info("Successfully fetched document")
-            return response.json()
+            try:
+                return response.json()
+            except json.JSONDecodeError as json_error:
+                logger.error(f"Invalid JSON in document response: {json_error}")
+                return None
         elif response.status_code == 404:
             logger.warning("Document not found")
             return None
+        elif response.status_code == 401:
+            logger.error("Authentication required for CouchDB access")
+            return None
+        elif response.status_code == 403:
+            logger.error("Access forbidden to CouchDB document")
+            return None
         else:
-            raise Exception(f"HTTP error {response.status_code}")
-    except requests.RequestException as e:
-        logger.error(f"Error fetching document: {e}")
+            logger.error(f"HTTP error {response.status_code}: {response.text}")
+            return None
+            
+    except requests.exceptions.ConnectionError as conn_error:
+        logger.error(f"Connection error fetching document: {conn_error}")
+        return None
+    except requests.exceptions.Timeout as timeout_error:
+        logger.error(f"Timeout error fetching document: {timeout_error}")
+        return None
+    except requests.exceptions.RequestException as req_error:
+        logger.error(f"Request error fetching document: {req_error}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching document: {e}")
         return None
 
 # Background thread to watch for changes in CouchDB
@@ -613,16 +884,39 @@ def watch_changes():
             response = session.get(url, params=params, stream=True, timeout=30)
             for line in response.iter_lines():
                 if line:
-                    change = json.loads(line.decode('utf-8'))
-                    if 'id' in change and change['id'] == tv_uuid:
-                        logger.info("Change detected, setting need_refetch")
-                        need_refetch.set()
-        except requests.RequestException as e:
-            logger.error(f"Error in changes feed: {e}")
+                    try:
+                        change = json.loads(line.decode('utf-8'))
+                        if 'id' in change and change['id'] == tv_uuid:
+                            logger.info("Change detected, setting need_refetch")
+                            need_refetch.set()
+                    except (json.JSONDecodeError, UnicodeDecodeError) as parse_error:
+                        logger.warning(f"Failed to parse changes feed line: {parse_error}")
+                        continue
+        except requests.exceptions.ConnectionError as conn_error:
+            logger.error(f"Connection error in changes feed: {conn_error}")
+            time.sleep(30)  # Wait before retrying
+        except requests.exceptions.Timeout as timeout_error:
+            logger.error(f"Timeout error in changes feed: {timeout_error}")
+            time.sleep(30)  # Wait before retrying
+        except requests.RequestException as req_error:
+            logger.error(f"Request error in changes feed: {req_error}")
+            time.sleep(30)  # Wait before retrying
+        except Exception as e:
+            logger.error(f"Unexpected error in changes feed: {e}")
             time.sleep(30)  # Wait before retrying
 
 # Start the background thread to watch for changes
 threading.Thread(target=watch_changes, daemon=True).start()
+
+# Function to cleanup old slides
+def cleanup_old_slides(old_slides):
+    """Cleanup resources from old slides before replacing them"""
+    for slide in old_slides:
+        if slide.get('type') == 'video' and slide.get('cleanup_func'):
+            try:
+                slide['cleanup_func']()
+            except Exception as cleanup_error:
+                logger.warning(f"Error during slide cleanup: {cleanup_error}")
 
 # Function to process slides from document
 def process_slides_from_doc(doc):
@@ -633,10 +927,26 @@ def process_slides_from_doc(doc):
         if content_type == 'video':
             video_cap, temp_file = process_video(slide_doc['name'])
             if video_cap:
+                # Create cleanup function for this video resource
+                def cleanup_video_resources(cap=video_cap, file_path=temp_file):
+                    if cap:
+                        try:
+                            cap.release()
+                            logger.debug("Video capture released successfully")
+                        except Exception as cap_error:
+                            logger.warning(f"Failed to release video capture: {cap_error}")
+                    if file_path:
+                        try:
+                            os.unlink(file_path)
+                            logger.debug(f"Successfully cleaned up temp video file: {file_path}")
+                        except OSError as file_error:
+                            logger.warning(f"Failed to cleanup temp video file {file_path}: {file_error}")
+                
                 processed_slides.append({
                     'type': 'video',
                     'video_cap': video_cap,
                     'temp_file': temp_file,
+                    'cleanup_func': cleanup_video_resources,
                     'duration': slide_doc.get('duration', 10),
                     'id': slide_doc['name'],
                     'filename': slide_doc['name'],
@@ -723,6 +1033,8 @@ while True:
             if doc:
                 slides = process_slides_from_doc(doc)
                 if slides:
+                    # Trigger immediate cleanup of unused attachments
+                    cleanup_unused_attachments_immediate()
                     state = "slideshow"
                     current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
@@ -747,6 +1059,8 @@ while True:
             if doc:
                 slides = process_slides_from_doc(doc)
                 if slides:
+                    # Trigger immediate cleanup of unused attachments
+                    cleanup_unused_attachments_immediate()
                     state = "slideshow"
                     current_slide_index = 0
                     first_slide_info = {'id': slides[0]['id'], 'filename': slides[0]['filename']}
@@ -762,7 +1076,7 @@ while True:
             if slide_data['type'] == 'video':
                 video_cap = slide_data['video_cap']
                 start_time = time.time()
-                slide_duration = slide_data.get('duration', 10)
+                slide_duration = validate_slide_duration(slide_data.get('duration'), slide_data.get('filename', 'Unknown'))
                 while time.time() - start_time < slide_duration:
                     if need_refetch.is_set():
                         need_refetch.clear()
@@ -770,15 +1084,16 @@ while True:
                         if doc:
                             new_slides = process_slides_from_doc(doc)
                             if new_slides:
+                                cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 # Resume from current slide index, or last valid index
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
                                 slide_data = slides[slide_index]
                                 start_time = time.time()
-                                slide_duration = slide_data.get('duration', 10)
-                                if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
-                                    slide_duration = 10
+                                slide_duration = validate_slide_duration(slide_data.get('duration'), slide_data.get('filename', 'Unknown'))
                                 video_cap = slide_data.get('video_cap')
                                 continue
                             else:
@@ -810,7 +1125,7 @@ while True:
                             text_params = slide_data['text_params']
                             if '{datetime}' in text_params.get('text', ''):
                                 temp_surface = pygame.Surface((scaled_surface.get_width(), scaled_surface.get_height()), pygame.SRCALPHA)
-                                current_text_surface, current_text_rect = process_text_overlay(temp_surface, text_params)
+                                current_text_surface, current_text_rect = get_cached_text_surface(temp_surface, text_params)
                                 if current_text_surface and current_text_rect:
                                     text_surface = current_text_surface
                                     text_rect = current_text_rect
@@ -831,18 +1146,26 @@ while True:
                             if event.key == pygame.K_ESCAPE:
                                 pygame.quit()
                                 sys.exit()
-                    time.sleep(0.03)
-                video_cap.release()
-                if slide_data.get('temp_file'):
-                    try:
-                        os.unlink(slide_data['temp_file'])
-                    except:
-                        pass
+                    # Dynamic frame timing for smooth scrolling
+                    current_frame_time = time.time()
+                    if last_frame_time > 0:
+                        frame_duration = current_frame_time - last_frame_time
+                        target_frame_time = 1.0 / 30.0  # Target 30 FPS
+                        sleep_time = max(0, target_frame_time - frame_duration)
+                    else:
+                        sleep_time = 1.0 / 30.0
+                    last_frame_time = current_frame_time
+                    time.sleep(sleep_time)
+                # Cleanup video resources using the cleanup function
+                if slide_data.get('cleanup_func'):
+                    slide_data['cleanup_func']()
             else:
                 img_width, img_height = slide_data['image'].get_size()
                 center_x = (screen_width - img_width) // 2
                 center_y = (screen_height - img_height) // 2
                 scroll_x = screen_width
+                scroll_start_time = time.time()  # Track scrolling timing
+                scroll_cycle_complete = False  # Track scroll cycle state
                 incoming_transition_duration_ms = slide_data.get('transition_time', 0)
                 if incoming_transition_duration_ms > 0:
                     delay_per_step = (incoming_transition_duration_ms / FADE_STEPS) / 1000.0
@@ -865,7 +1188,10 @@ while True:
                         if doc:
                             new_slides = process_slides_from_doc(doc)
                             if new_slides:
+                                cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
                                 slide_data = slides[slide_index]
@@ -877,10 +1203,7 @@ while True:
                             state = "default"
                             break
                 start_time = time.time()
-                slide_duration = slide_data.get('duration', 10)
-                if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
-                    logger.warning(f"Invalid duration for slide {slide_data.get('filename', 'Unknown')}: '{slide_duration}'. Defaulting to 10s.")
-                    slide_duration = 10
+                slide_duration = validate_slide_duration(slide_data.get('duration'), slide_data.get('filename', 'Unknown'))
                 while time.time() - start_time < slide_duration:
                     if need_refetch.is_set():
                         need_refetch.clear()
@@ -888,14 +1211,15 @@ while True:
                         if doc:
                             new_slides = process_slides_from_doc(doc)
                             if new_slides:
+                                cleanup_old_slides(slides)
                                 slides = new_slides
+                                # Trigger immediate cleanup of unused attachments
+                                cleanup_unused_attachments_immediate()
                                 current_slide_index = min(slide_index, len(slides) - 1)
                                 slide_index = current_slide_index
                                 slide_data = slides[slide_index]
                                 start_time = time.time()
-                                slide_duration = slide_data.get('duration', 10)
-                                if not isinstance(slide_duration, (int, float)) or slide_duration <= 0:
-                                    slide_duration = 10
+                                slide_duration = validate_slide_duration(slide_data.get('duration'), slide_data.get('filename', 'Unknown'))
                                 continue
                             else:
                                 state = "default"
@@ -910,7 +1234,7 @@ while True:
                     if slide_data.get('text_params') and slide_data['text_params'].get('text'):
                         text_params = slide_data['text_params']
                         if '{datetime}' in text_params.get('text', ''):
-                            current_text_surface, current_text_rect = process_text_overlay(slide_data['image'], text_params)
+                            current_text_surface, current_text_rect = get_cached_text_surface(slide_data['image'], text_params)
                             if current_text_surface and current_text_rect:
                                 text_surface = current_text_surface
                                 original_text_rect = current_text_rect
@@ -922,10 +1246,34 @@ while True:
                             original_text_rect = slide_data.get('text_rect')
                         if text_surface and original_text_rect:
                             if slide_data.get('scroll_text'):
-                                screen.blit(text_surface, (scroll_x, center_y + original_text_rect.top))
-                                scroll_x -= 2
-                                if scroll_x < -text_surface.get_width():
-                                    scroll_x = screen_width
+                                # Time-based scrolling for smooth animation
+                                current_time = time.time()
+                                elapsed_time = current_time - scroll_start_time
+                                
+                                # Calculate dynamic scroll speed based on text content
+                                text_width = text_surface.get_width()
+                                dynamic_scroll_speed = calculate_scroll_speed(text_width, screen_width, scroll_speed_pixels_per_second)
+                                
+                                if not scroll_cycle_complete:
+                                    scroll_x = screen_width - (elapsed_time * dynamic_scroll_speed)
+                                    
+                                    # Check if text has completely exited screen
+                                    if scroll_x < -text_width:
+                                        scroll_cycle_complete = True
+                                        scroll_start_time = current_time  # Start pause timer
+                                        scroll_x = -text_width  # Keep text just off screen
+                                else:
+                                    # Pause period after scroll completion
+                                    if elapsed_time >= scroll_pause_duration:
+                                        # Reset for next scroll cycle
+                                        scroll_cycle_complete = False
+                                        scroll_start_time = current_time
+                                        scroll_x = screen_width
+                                    else:
+                                        # Keep text off screen during pause
+                                        scroll_x = -text_width
+                                
+                                screen.blit(text_surface, (int(scroll_x), center_y + original_text_rect.top))
                             else:
                                 screen.blit(text_surface, (center_x + original_text_rect.left, center_y + original_text_rect.top))
                     pygame.display.flip()
@@ -937,7 +1285,16 @@ while True:
                             if event.key == pygame.K_ESCAPE:
                                 pygame.quit()
                                 sys.exit()
-                    time.sleep(0.03)
+                    # Dynamic frame timing for smooth scrolling
+                    current_frame_time = time.time()
+                    if last_frame_time > 0:
+                        frame_duration = current_frame_time - last_frame_time
+                        target_frame_time = 1.0 / 30.0  # Target 30 FPS
+                        sleep_time = max(0, target_frame_time - frame_duration)
+                    else:
+                        sleep_time = 1.0 / 30.0
+                    last_frame_time = current_frame_time
+                    time.sleep(sleep_time)
                 if need_refetch.is_set():
                     continue
             if state == "default":
