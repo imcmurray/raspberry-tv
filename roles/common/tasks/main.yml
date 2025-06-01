@@ -28,6 +28,13 @@
       - python3-venv
     state: present
 
+- name: Install SDL2 packages for pygame
+  apt:
+    name:
+      - libsdl2-2.0-0
+      - libsdl2-dev
+    state: present
+
 - name: Install Chromium browser
   apt:
     name: chromium-browser

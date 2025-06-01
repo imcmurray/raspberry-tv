@@ -43,8 +43,21 @@ signal.signal(signal.SIGHUP, signal_handler)
 def setup_raspberry_pi_display():
     """Set up display environment for Raspberry Pi OS"""
     early_logger.info("Setting up display for Raspberry Pi OS")
-    # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
-    os.environ['SDL_FBDEV'] = '/dev/fb1'
+    
+    # Check for framebuffer devices and choose the best available
+    if check_framebuffer('/dev/fb1'):
+        # Prefer fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
+        os.environ['SDL_FBDEV'] = '/dev/fb1'
+        early_logger.info("Using /dev/fb1 (HDMI1) for slideshow display")
+    elif check_framebuffer('/dev/fb0'):
+        # Fall back to fb0 if fb1 is not available
+        os.environ['SDL_FBDEV'] = '/dev/fb0'
+        early_logger.warning("fb1 not available, falling back to /dev/fb0 (HDMI0)")
+    else:
+        early_logger.error("No framebuffer devices found! Display may not work.")
+        # Set fb0 as fallback anyway
+        os.environ['SDL_FBDEV'] = '/dev/fb0'
+    
     os.environ['SDL_VIDEODRIVER'] = 'fbcon'
     os.environ['SDL_NOMOUSE'] = '1'
     early_logger.info("Raspberry Pi OS display setup completed")
@@ -203,7 +216,23 @@ for attempt, config in enumerate(display_drivers_to_try):
     try:
         # Reinitialize pygame with new driver
         pygame.quit()
-        pygame.init()
+        
+        # Force re-initialization with retries
+        for init_attempt in range(3):
+            try:
+                pygame.init()
+                if pygame.get_init():
+                    early_logger.info(f"Pygame initialized successfully on attempt {init_attempt + 1}")
+                    break
+                else:
+                    early_logger.warning(f"Pygame init returned False on attempt {init_attempt + 1}")
+                    time.sleep(0.5)
+            except Exception as init_error:
+                early_logger.warning(f"Pygame init failed on attempt {init_attempt + 1}: {init_error}")
+                time.sleep(0.5)
+        else:
+            early_logger.error(f"Failed to initialize pygame after 3 attempts with {driver}")
+            continue
         
         early_logger.info(f"Attempting to create display with {driver}...")
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
