@@ -44,6 +44,59 @@
     mode: '0644'
   notify: reboot
 
+- name: Create framebuffer setup script
+  copy:
+    dest: /usr/local/bin/setup-framebuffers.sh
+    content: |
+      #!/bin/bash
+      # Force creation of framebuffer devices for dual HDMI
+      
+      # Wait for system to settle
+      sleep 2
+      
+      # Create fb1 if it doesn't exist (for HDMI1)
+      if [ ! -e /dev/fb1 ]; then
+          echo "Creating /dev/fb1 for HDMI1"
+          mknod /dev/fb1 c 29 32
+          chgrp video /dev/fb1
+          chmod 664 /dev/fb1
+      fi
+      
+      # Ensure fb0 has correct permissions
+      if [ -e /dev/fb0 ]; then
+          chgrp video /dev/fb0
+          chmod 664 /dev/fb0
+      fi
+      
+      # Log status
+      echo "Framebuffer devices status:"
+      ls -la /dev/fb* 2>/dev/null || echo "No framebuffer devices found"
+    mode: '0755'
+
+- name: Create systemd service for framebuffer setup
+  copy:
+    dest: /etc/systemd/system/framebuffer-setup.service
+    content: |
+      [Unit]
+      Description=Setup framebuffer devices for dual HDMI
+      After=multi-user.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/setup-framebuffers.sh
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
+    mode: '0644'
+  notify: reboot
+
+- name: Enable framebuffer setup service
+  systemd:
+    name: framebuffer-setup
+    enabled: yes
+    daemon_reload: yes
+
 - name: Check for config.txt location
   stat:
     path: "{{ item }}"
@@ -58,21 +111,31 @@
   loop: "{{ config_locations.results }}"
   when: item.stat.exists
 
-- name: Disable existing vc4-kms-v3d overlay (prevents separate framebuffers)
+- name: Disable all VC4 overlays to use legacy framebuffer driver
   lineinfile:
     path: "{{ boot_config_path }}"
-    regexp: '^dtoverlay=vc4-kms-v3d'
+    regexp: '^dtoverlay=vc4'
     line: '#dtoverlay=vc4-kms-v3d'
   notify: reboot
   when: boot_config_path is defined
 
-- name: Configure dual HDMI setup with separate framebuffers
+- name: Disable vc4-fkms-v3d overlay specifically
+  lineinfile:
+    path: "{{ boot_config_path }}"
+    regexp: '^dtoverlay=vc4-fkms-v3d'
+    line: '#dtoverlay=vc4-fkms-v3d'
+  notify: reboot
+  when: boot_config_path is defined
+
+- name: Configure legacy framebuffer dual HDMI setup
   blockinfile:
     path: "{{ boot_config_path }}"
     marker: "# {mark} ANSIBLE MANAGED DUAL HDMI CONFIGURATION"
     block: |
-      # Dual HDMI Configuration for slideshow system
-      # Force both HDMI ports to be active and detected
+      # Dual HDMI Configuration using LEGACY framebuffer driver
+      # This creates separate /dev/fb0 and /dev/fb1 devices
+      
+      # Force both HDMI ports to be detected and active
       hdmi_force_hotplug:0=1
       hdmi_force_hotplug:1=1
       
@@ -86,18 +149,20 @@
       hdmi_mode:1=16
       hdmi_drive:1=2
       
-      # Enable dual display mode
+      # Enable dual display with legacy driver
       max_framebuffers=2
-      
-      # Use legacy framebuffer driver (required for /dev/fb1 creation)
-      dtoverlay=vc4-fkms-v3d
       framebuffer_width=1920
       framebuffer_height=1080
       
-      # Ensure sufficient GPU memory for dual displays
+      # Use legacy framebuffer driver (NO VC4!)
+      # Comment out or remove any vc4 overlays for separate fb devices
+      #dtoverlay=vc4-kms-v3d
+      #dtoverlay=vc4-fkms-v3d
+      
+      # Sufficient GPU memory for dual displays  
       gpu_mem=128
       
-      # Disable overscan for both displays
+      # Disable overscan for clean output
       disable_overscan=1
   notify: reboot
   when: boot_config_path is defined

@@ -162,9 +162,10 @@ if os.environ.get('SDL_VIDEODRIVER') is None:
 
 # Try multiple display drivers for Raspberry Pi OS
 display_drivers_to_try = [
-    {'driver': 'fbcon', 'fbdev': '/dev/fb1'},  # Preferred: HDMI1 port
+    {'driver': 'fbcon', 'fbdev': '/dev/fb1'},  # Preferred: HDMI1 port (if exists)
     {'driver': 'fbcon', 'fbdev': '/dev/fb0'},  # Fallback: HDMI0 port
-    {'driver': 'kmsdrm', 'fbdev': None},       # Fallback: Direct rendering
+    {'driver': 'kmsdrm', 'fbdev': None},       # Direct rendering (modern VC4)
+    {'driver': 'directfb', 'fbdev': None},     # DirectFB fallback
 ]
 
 screen = None
