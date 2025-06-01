@@ -1,26 +1,8 @@
-- name: Configure Ubuntu dual HDMI setup
-  block:
-    - name: Add user to video group for framebuffer access
-      user:
-        name: "{{ service_user }}"
-        groups: video
-        append: yes
-    
-    - name: Create framebuffer devices if they don't exist
-      shell: |
-        if [ ! -e /dev/fb0 ]; then
-          mknod /dev/fb0 c 29 0
-          chgrp video /dev/fb0
-          chmod 664 /dev/fb0
-        fi
-        if [ ! -e /dev/fb1 ]; then
-          mknod /dev/fb1 c 29 32
-          chgrp video /dev/fb1
-          chmod 664 /dev/fb1
-        fi
-      become: yes
-    
-  when: target_os == "ubuntu"
+- name: Add user to video group for framebuffer access
+  user:
+    name: "{{ service_user }}"
+    groups: video
+    append: yes
 
 - name: Check for config.txt location
   stat:
@@ -29,15 +11,12 @@
   loop:
     - /boot/firmware/config.txt
     - /boot/config.txt
-  when: target_os == "raspios"
 
 - name: Set boot config path
   set_fact:
     boot_config_path: "{{ item.item }}"
   loop: "{{ config_locations.results }}"
-  when: 
-    - target_os == "raspios"
-    - item.stat.exists
+  when: item.stat.exists
 
 - name: Configure dual HDMI setup
   lineinfile:
@@ -45,10 +24,10 @@
     line: '{{ item }}'
   loop:
     - '# Dual HDMI Configuration'
-    - '# HDMI0 (primary) - Console/SSH access'
+    - '# HDMI0 (fb0) - Console/SSH access'
     - 'hdmi_group:0=1'
     - 'hdmi_mode:0=16'
-    - '# HDMI1 (secondary) - Slideshow display' 
+    - '# HDMI1 (fb1) - Slideshow display' 
     - 'hdmi_group:1=1'
     - 'hdmi_mode:1=16'
     - '# Enable both HDMI outputs'
@@ -59,9 +38,7 @@
     - '# Disable KMS overlays to get separate framebuffers'
     - '#dtoverlay=vc4-kms-v3d'
   notify: reboot
-  when: 
-    - target_os == "raspios"
-    - boot_config_path is defined
+  when: boot_config_path is defined
 
 - name: Check for cmdline.txt location
   stat:
@@ -70,22 +47,20 @@
   loop:
     - /boot/firmware/cmdline.txt
     - /boot/cmdline.txt
-  when: target_os == "raspios"
 
 - name: Set boot cmdline path
   set_fact:
     boot_cmdline_path: "{{ item.item }}"
   loop: "{{ cmdline_locations.results }}"
-  when: 
-    - target_os == "raspios"
-    - item.stat.exists
+  when: item.stat.exists
 
-- name: Add consoleblank=0 to cmdline.txt
+- name: Configure console output to fb0 and disable screen blanking
   shell: |
     if ! grep -q "consoleblank=0" {{ boot_cmdline_path }}; then
       sed -i 's/$/ consoleblank=0/' {{ boot_cmdline_path }}
     fi
+    if ! grep -q "fbcon=map:0" {{ boot_cmdline_path }}; then
+      sed -i 's/$/ fbcon=map:0/' {{ boot_cmdline_path }}
+    fi
   notify: reboot
-  when: 
-    - target_os == "raspios"
-    - boot_cmdline_path is defined
+  when: boot_cmdline_path is defined
