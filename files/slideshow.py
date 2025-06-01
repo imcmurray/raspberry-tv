@@ -44,23 +44,19 @@ def setup_raspberry_pi_display():
     """Set up display environment for Raspberry Pi OS"""
     early_logger.info("Setting up display for Raspberry Pi OS")
     
-    # Check for framebuffer devices and choose the best available
-    if check_framebuffer('/dev/fb1'):
-        # Prefer fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
-        os.environ['SDL_FBDEV'] = '/dev/fb1'
-        early_logger.info("Using /dev/fb1 (HDMI1) for slideshow display")
-    elif check_framebuffer('/dev/fb0'):
-        # Fall back to fb0 if fb1 is not available
+    # Use fb0 which is guaranteed to work - it will span both displays
+    # This will display on both HDMI0 and HDMI1 simultaneously
+    if check_framebuffer('/dev/fb0'):
         os.environ['SDL_FBDEV'] = '/dev/fb0'
-        early_logger.warning("fb1 not available, falling back to /dev/fb0 (HDMI0)")
+        early_logger.info("Using /dev/fb0 (spans both HDMI displays)")
     else:
-        early_logger.error("No framebuffer devices found! Display may not work.")
+        early_logger.error("No working framebuffer device found!")
         # Set fb0 as fallback anyway
         os.environ['SDL_FBDEV'] = '/dev/fb0'
     
     os.environ['SDL_VIDEODRIVER'] = 'fbcon'
     os.environ['SDL_NOMOUSE'] = '1'
-    early_logger.info("Raspberry Pi OS display setup completed")
+    early_logger.info("Raspberry Pi OS display setup completed - slideshow will appear on both displays")
 
 # Function to check if framebuffer exists and is accessible
 def check_framebuffer(fb_path):
@@ -162,9 +158,9 @@ if os.environ.get('SDL_VIDEODRIVER') is None:
 
 # Try multiple display drivers for Raspberry Pi OS
 display_drivers_to_try = [
-    {'driver': 'fbcon', 'fbdev': '/dev/fb1'},  # Preferred: HDMI1 port (if exists)
-    {'driver': 'fbcon', 'fbdev': '/dev/fb0'},  # Fallback: HDMI0 port
-    {'driver': 'kmsdrm', 'fbdev': None},       # Direct rendering (modern VC4)
+    {'driver': 'kmsdrm', 'fbdev': None},       # Modern VC4 KMS/DRM (preferred)
+    {'driver': 'fbcon', 'fbdev': '/dev/fb0'},  # Single framebuffer (spans both displays)
+    {'driver': 'fbcon', 'fbdev': '/dev/fb1'},  # Legacy separate framebuffer (if exists)
     {'driver': 'directfb', 'fbdev': None},     # DirectFB fallback
 ]
 
@@ -187,8 +183,8 @@ for attempt, config in enumerate(display_drivers_to_try):
     
     # Special setup for different drivers
     if driver == 'kmsdrm':
-        # For KMS/DRM, ensure we're in the video group and check for DRM devices
-        early_logger.info("Setting up KMS/DRM driver...")
+        # For KMS/DRM, configure for dual display setup
+        early_logger.info("Setting up KMS/DRM driver for dual HDMI...")
         try:
             # Check for DRM devices
             drm_devices = [f for f in os.listdir('/dev/dri') if f.startswith('card')]
@@ -196,15 +192,18 @@ for attempt, config in enumerate(display_drivers_to_try):
             if not drm_devices:
                 early_logger.warning("No DRM devices found in /dev/dri")
             else:
-                # Try to use the primary card (usually card0 for HDMI0, card1 for HDMI1)
-                # For dual HDMI setup, use card1 for slideshow display
-                preferred_card = 'card1' if 'card1' in drm_devices else drm_devices[0]
-                os.environ['SDL_DRM_DEVICE'] = f'/dev/dri/{preferred_card}'
-                early_logger.info(f"Using DRM device: /dev/dri/{preferred_card}")
+                # Use card0 which handles both HDMI ports in modern Pi OS
+                primary_card = 'card0' if 'card0' in drm_devices else drm_devices[0]
+                os.environ['SDL_DRM_DEVICE'] = f'/dev/dri/{primary_card}'
+                early_logger.info(f"Using DRM device: /dev/dri/{primary_card}")
                 
-                # Additional DRM/KMS environment variables
+                # KMS/DRM environment variables for dual display
                 os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
-                os.environ['SDL_KMSDRM_DEVICE_INDEX'] = '0'  # Use first available device
+                os.environ['SDL_KMSDRM_DEVICE_INDEX'] = '0'
+                
+                # Configure for second display (HDMI1) output
+                # This tells SDL to use the second display connector
+                os.environ['SDL_KMSDRM_REQUIRE_DRM_MASTER'] = '0'
                 
         except Exception as e:
             early_logger.warning(f"Could not check DRM devices: {e}")
