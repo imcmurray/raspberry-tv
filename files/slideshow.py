@@ -39,20 +39,15 @@ def signal_handler(signum, frame):
 
 signal.signal(signal.SIGHUP, signal_handler)
 
-# Detect if running on Ubuntu (needs Xvfb) vs Raspberry Pi OS (can use fbcon)
-def is_ubuntu():
-    """Check if running on Ubuntu."""
-    try:
-        with open('/etc/os-release', 'r') as f:
-            content = f.read()
-            early_logger.info(f"OS detected from /etc/os-release: {content.strip()}")
-            return 'Ubuntu' in content
-    except Exception as e:
-        early_logger.error(f"Failed to detect OS: {e}")
-        return False
-
-# Global variable for Xvfb process
-xvfb_proc = None
+# Raspberry Pi OS display setup
+def setup_raspberry_pi_display():
+    """Set up display environment for Raspberry Pi OS"""
+    early_logger.info("Setting up display for Raspberry Pi OS")
+    # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
+    os.environ['SDL_FBDEV'] = '/dev/fb1'
+    os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+    os.environ['SDL_NOMOUSE'] = '1'
+    early_logger.info("Raspberry Pi OS display setup completed")
 
 # Function to check if framebuffer exists and is accessible
 def check_framebuffer(fb_path):
@@ -66,102 +61,9 @@ def check_framebuffer(fb_path):
         early_logger.error(f"Error checking framebuffer {fb_path}: {e}")
         return False
 
-# Function to setup framebuffer permissions and devices
-def setup_framebuffer_ubuntu():
-    """Setup framebuffer devices and permissions for Ubuntu"""
-    try:
-        import subprocess
-        # Ensure framebuffer devices exist and have proper permissions
-        for fb_num in [0, 1]:
-            fb_path = f'/dev/fb{fb_num}'
-            if not os.path.exists(fb_path):
-                early_logger.info(f"Creating framebuffer device {fb_path}")
-                try:
-                    # Create framebuffer device node
-                    subprocess.run(['sudo', 'mknod', fb_path, 'c', '29', str(fb_num * 32)], 
-                                 check=True, capture_output=True)
-                    subprocess.run(['sudo', 'chgrp', 'video', fb_path], 
-                                 check=True, capture_output=True)
-                    subprocess.run(['sudo', 'chmod', '664', fb_path], 
-                                 check=True, capture_output=True)
-                    early_logger.info(f"Successfully created {fb_path}")
-                except subprocess.CalledProcessError as e:
-                    early_logger.warning(f"Failed to create {fb_path}: {e}")
-            
-            # Check if framebuffer is now accessible
-            if os.path.exists(fb_path):
-                try:
-                    # Try to get framebuffer info
-                    result = subprocess.run(['sudo', 'fbset', '-fb', fb_path], 
-                                          capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        early_logger.info(f"Framebuffer {fb_path} info: {result.stdout.strip()}")
-                    else:
-                        early_logger.warning(f"Could not get {fb_path} info: {result.stderr}")
-                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                    early_logger.warning(f"fbset failed for {fb_path}: {e}")
-                    
-        return True
-    except Exception as e:
-        early_logger.error(f"Error setting up framebuffer: {e}")
-        return False
 
-# Setup display environment based on OS
-if is_ubuntu():
-    # Ubuntu Server: Try to use hardware framebuffer for real HDMI output
-    early_logger.info("Setting up display for Ubuntu Server")
-    
-    # First, try to setup framebuffer devices
-    setup_framebuffer_ubuntu()
-    
-    # Try different display methods in order of preference
-    display_method = None
-    
-    # Method 1: Try framebuffer console (real HDMI output)
-    if check_framebuffer('/dev/fb1'):
-        early_logger.info("Using framebuffer /dev/fb1 for HDMI1 output")
-        os.environ['SDL_FBDEV'] = '/dev/fb1'
-        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-        os.environ['SDL_NOMOUSE'] = '1'
-        display_method = "fbcon_fb1"
-    elif check_framebuffer('/dev/fb0'):
-        early_logger.info("Using framebuffer /dev/fb0 for HDMI0 output")
-        os.environ['SDL_FBDEV'] = '/dev/fb0'
-        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-        os.environ['SDL_NOMOUSE'] = '1'
-        display_method = "fbcon_fb0"
-    else:
-        # Method 2: Try DRM/KMS (Direct Rendering Manager)
-        early_logger.info("Framebuffer not available, trying DRM")
-        os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
-        display_method = "kmsdrm"
-        
-        # If DRM fails, try DirectFB
-        if display_method == "kmsdrm":
-            try:
-                # Test if KMS DRM is available
-                test_env = os.environ.copy()
-                test_env['SDL_VIDEODRIVER'] = 'kmsdrm'
-                result = subprocess.run(['python3', '-c', 
-                    'import pygame; pygame.init(); pygame.display.set_mode((100,100))'], 
-                    env=test_env, capture_output=True, timeout=10)
-                if result.returncode != 0:
-                    early_logger.warning(f"KMS DRM test failed: {result.stderr.decode()}")
-                    early_logger.info("Trying DirectFB as fallback")
-                    os.environ['SDL_VIDEODRIVER'] = 'directfb'
-                    display_method = "directfb"
-            except Exception as e:
-                early_logger.warning(f"Could not test KMS DRM: {e}")
-    
-    early_logger.info(f"Ubuntu display method selected: {display_method}")
-else:
-    # Raspberry Pi OS can use framebuffer
-    # Use fb1 (HDMI1/secondary port) for slideshow, leaving fb0 (HDMI0/primary) for console
-    early_logger.info("Setting up framebuffer display for Raspberry Pi OS")
-    os.environ['SDL_FBDEV'] = '/dev/fb1'
-    os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-    os.environ['SDL_NOMOUSE'] = '1'
-    early_logger.info("Framebuffer setup completed for Raspberry Pi OS")
+# Setup display environment for Raspberry Pi OS
+setup_raspberry_pi_display()
 
 # Define Configuration Path
 CONFIG_FILE_PATH = '/etc/slideshow.conf'
@@ -228,7 +130,7 @@ early_logger.info(f"SDL_FBDEV: {os.environ.get('SDL_FBDEV', 'not set')}")
 early_logger.info(f"DISPLAY: {os.environ.get('DISPLAY', 'not set')}")
 
 # Additional debugging - check if our display setup ran
-early_logger.info(f"Ubuntu detection result: {is_ubuntu()}")
+early_logger.info("Running on Raspberry Pi OS")
 early_logger.info(f"Current working directory: {os.getcwd()}")
 early_logger.info(f"Process environment dump: {dict(os.environ)}")
 
@@ -237,51 +139,20 @@ if os.environ.get('SDL_VIDEODRIVER') is None:
     early_logger.error("SDL_VIDEODRIVER is not set! Display setup may have failed.")
     early_logger.info("Attempting emergency display setup...")
     
-    if is_ubuntu():
-        early_logger.info("Emergency: Setting up Ubuntu display environment")
-        # Force framebuffer setup for Ubuntu
-        if check_framebuffer('/dev/fb1'):
-            early_logger.info("Emergency: Using framebuffer /dev/fb1")
-            os.environ['SDL_FBDEV'] = '/dev/fb1'
-            os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-            os.environ['SDL_NOMOUSE'] = '1'
-        elif check_framebuffer('/dev/fb0'):
-            early_logger.info("Emergency: Using framebuffer /dev/fb0")
-            os.environ['SDL_FBDEV'] = '/dev/fb0'
-            os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-            os.environ['SDL_NOMOUSE'] = '1'
-        else:
-            early_logger.info("Emergency: No framebuffer available, trying DRM")
-            os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
-    else:
-        early_logger.info("Emergency: Setting up Raspberry Pi display environment")
-        os.environ['SDL_FBDEV'] = '/dev/fb1'
-        os.environ['SDL_VIDEODRIVER'] = 'fbcon'
-        os.environ['SDL_NOMOUSE'] = '1'
+    early_logger.info("Emergency: Setting up Raspberry Pi display environment")
+    setup_raspberry_pi_display()
     
     # Show what we set
     early_logger.info(f"Emergency setup - SDL_VIDEODRIVER: {os.environ.get('SDL_VIDEODRIVER')}")
     early_logger.info(f"Emergency setup - SDL_FBDEV: {os.environ.get('SDL_FBDEV')}")
     early_logger.info(f"Emergency setup - DISPLAY: {os.environ.get('DISPLAY')}")
 
-# Try multiple display drivers if the first one fails
-display_drivers_to_try = []
-
-if is_ubuntu():
-    # Ubuntu: Hardware-only drivers (no X11 fallback)
-    display_drivers_to_try = [
-        {'driver': 'kmsdrm', 'fbdev': None},
-        {'driver': 'fbcon', 'fbdev': '/dev/fb1'},
-        {'driver': 'fbcon', 'fbdev': '/dev/fb0'},
-        {'driver': 'directfb', 'fbdev': None},
-    ]
-else:
-    # Raspberry Pi: Standard framebuffer approach
-    display_drivers_to_try = [
-        {'driver': 'fbcon', 'fbdev': '/dev/fb1'},
-        {'driver': 'fbcon', 'fbdev': '/dev/fb0'},
-        {'driver': 'kmsdrm', 'fbdev': None},
-    ]
+# Try multiple display drivers for Raspberry Pi OS
+display_drivers_to_try = [
+    {'driver': 'fbcon', 'fbdev': '/dev/fb1'},  # Preferred: HDMI1 port
+    {'driver': 'fbcon', 'fbdev': '/dev/fb0'},  # Fallback: HDMI0 port
+    {'driver': 'kmsdrm', 'fbdev': None},       # Fallback: Direct rendering
+]
 
 screen = None
 screen_width, screen_height = 1920, 1080

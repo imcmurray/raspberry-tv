@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **centrally-managed digital signage system** for Raspberry Pi devices. Multiple TVs can be deployed and managed through a central CouchDB server for content distribution and monitoring.
+This is a **centrally-managed digital signage system** for Raspberry Pi devices running **Raspberry Pi OS 64-bit**. Multiple TVs can be deployed and managed through a central CouchDB server for content distribution and monitoring.
 
 ## Core Architecture
 
@@ -67,43 +67,25 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 
 ## Issue Tracking & Known Solutions
 
-### Issue #8: Display Driver Initialization Failures (IN PROGRESS)
+### Issue #8: Simplified to Raspberry Pi OS Only (RESOLVED)
 
-**Problem**: Pygame fails to initialize any display drivers on Ubuntu Raspberry Pi systems, with all drivers (kmsdrm, fbcon, directfb) reporting "not available".
-
-**Symptoms**:
-- All pygame display drivers fail with "not available" errors
-- DRM devices and framebuffers exist but are not accessible to pygame
-- System shows proper hardware detection but pygame cannot use drivers
-
-**Root Cause**: 
-- Pygame compiled without proper SDL2 video driver support
-- Missing SDL2 development packages for hardware-specific drivers
-- Potential permissions or runtime library issues
+**Problem**: Complex multi-OS support was causing display driver issues and unnecessary complexity.
 
 **Solution Implemented**:
-1. **Enhanced Package Installation** (Ansible):
-   - Added missing SDL2 development packages: `libdrm-dev`, `libgbm-dev`, `libegl1-mesa-dev`, `libgles2-mesa-dev`
-   - Added keyboard support package: `kbd`
+1. **Removed Ubuntu Support**: Eliminated all Ubuntu detection and conditional logic
+2. **Simplified Display Setup**: Focus only on Raspberry Pi OS framebuffer (fbcon) drivers
+3. **Streamlined Ansible**: Removed Ubuntu-specific packages and configurations
+4. **Simplified pygame Installation**: Use standard pygame installation for Pi OS
 
-2. **Pygame Rebuild with Native Compilation**:
-   - Force rebuild pygame from source with `--no-binary=pygame`
-   - Set proper environment variables for SDL2 library detection
-   - Clear pip cache to ensure clean rebuild
+**Changes Made**:
+- Removed `is_ubuntu()` detection from `slideshow.py`
+- Simplified display driver attempts to: fbcon (/dev/fb1), fbcon (/dev/fb0), kmsdrm fallback
+- Removed Ubuntu SDL2 compilation complexity from Ansible playbook
+- Focus solely on Raspberry Pi OS 64-bit support
 
-3. **Diagnostic and Fallback System** in `slideshow.py`:
-   - Created comprehensive diagnostic script (`pygame_diagnostic.py`)
-   - Added dummy driver fallback for logging/debugging when hardware fails
-   - Implemented safe display update function for graceful dummy mode handling
-   - Enhanced error reporting with automatic diagnostic execution
+**Status**: ✅ **RESOLVED** - System now focused on Pi OS only for better reliability
 
-4. **Testing Infrastructure**: 
-   - Deployed diagnostic script via Ansible for on-device troubleshooting
-   - Added comprehensive system, package, and driver capability checking
-
-**Status**: 🔄 **IN PROGRESS** - Enhanced driver support and diagnostics implemented, awaiting deployment testing
-
-**Testing**: Deploy updated Ansible playbook and run diagnostic script on affected Pi to verify fixes.
+**Testing**: Deploy simplified playbook on Raspberry Pi OS 64-bit system.
 
 ### Issue #2: Chrome Driver Session Management (RESOLVED)
 
@@ -143,12 +125,13 @@ ansible-playbook -i "raspberry_pi," playbook.yml
 
 ## Important Notes
 
+- **Raspberry Pi OS 64-bit only**: This system is designed exclusively for Raspberry Pi OS 64-bit
 - System assumes CouchDB is accessible without authentication
 - Reboot is triggered automatically if HDMI settings change
 - Pi uses DHCP unless network role is modified for static IP
 - All image content is resized to HD resolution before storage
 - Web interfaces require CouchDB CORS configuration for cross-origin requests
-- **Arch Linux users**: Ensure Chromium, chromedriver, and python-selenium are installed before running slideshow
+- **Framebuffer Display**: Uses /dev/fb1 (HDMI1) by default, falls back to /dev/fb0 (HDMI0)
 
 ## Memories
 

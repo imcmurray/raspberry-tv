@@ -1,28 +1,17 @@
-- name: Detect operating system
+- name: Verify Raspberry Pi OS
   shell: |
     if [ -f /etc/rpi-issue ]; then
-      echo "raspios"
-    elif grep -q "Ubuntu" /etc/os-release; then
-      echo "ubuntu"
+      echo "Raspberry Pi OS detected"
     else
-      echo "unknown"
+      echo "WARNING: This playbook is designed for Raspberry Pi OS only!"
+      exit 1
     fi
-  register: detected_os
+  register: os_check
   changed_when: false
 
-- name: Set OS fact
-  set_fact:
-    target_os: "{{ detected_os.stdout }}"
-
-- name: Warn about Ubuntu compatibility
+- name: Display OS verification
   debug:
-    msg: |
-      WARNING: Ubuntu detected on Raspberry Pi.
-      This system is designed for Raspberry Pi OS. Some features may not work:
-      - HDMI power management (vcgencmd)
-      - Boot configuration (/boot/config.txt)
-      Consider switching to Raspberry Pi OS for full functionality.
-  when: target_os == "ubuntu"
+    msg: "{{ os_check.stdout }}"
 
 - name: Update package list
   apt:
@@ -49,90 +38,28 @@
     name: chromium-chromedriver
     state: present
 
-- name: Install OpenGL libraries for OpenCV (Ubuntu)
-  apt:
-    name:
-      - libgl1
-      - libglx-mesa0
-      - libglib2.0-0
-    state: present
-  when: target_os == "ubuntu"
 
-- name: Install display drivers and tools (Ubuntu)
-  apt:
-    name:
-      - libdrm2
-      - libgbm1
-      - fbset
-      - mesa-utils
-      - libgl1-mesa-dri
-      - libsdl2-2.0-0
-      - libsdl2-dev
-      - libsdl2-image-2.0-0
-      - libsdl2-mixer-2.0-0
-      - libsdl2-ttf-2.0-0
-      # Additional SDL2 video drivers for hardware output
-      - libdrm-dev
-      - libgbm-dev
-      - libegl1-mesa-dev
-      - libgles2-mesa-dev
-      # Framebuffer support
-      - kbd
-    state: present
-    update_cache: yes
-  when: target_os == "ubuntu"
-
-- name: Install DirectFB (Ubuntu - optional)
-  apt:
-    name: libdirectfb-1.7-7
-    state: present
-  when: target_os == "ubuntu"
-  ignore_errors: yes
-
-- name: Configure Ubuntu for hardware display output
+- name: Configure Raspberry Pi for hardware display output
   block:
-    - name: Ensure video group exists
-      group:
-        name: video
-        state: present
-    
     - name: Add user to video and render groups for GPU access
       user:
         name: "{{ service_user }}"
         groups: video,render
         append: yes
     
-    - name: Create DRM device directory if missing
-      file:
-        path: /dev/dri
-        state: directory
-        mode: '0755'
-    
-    - name: Check and load DRM modules
+    - name: Check framebuffer devices status
       shell: |
-        # Load DRM modules if not already loaded
-        modprobe drm 2>/dev/null || true
-        modprobe vc4 2>/dev/null || true
-        modprobe drm_kms_helper 2>/dev/null || true
-        
-        # Show loaded modules
-        echo "Loaded DRM modules:"
-        lsmod | grep -E "(drm|vc4)" || echo "No DRM modules found"
-        
-        # Show DRM devices
-        echo "DRM devices:"
-        ls -la /dev/dri/ 2>/dev/null || echo "No /dev/dri directory"
-        
-        # Show framebuffer devices
         echo "Framebuffer devices:"
-        ls -la /dev/fb* 2>/dev/null || echo "No framebuffer devices"
-      register: drm_status
+        ls -la /dev/fb* 2>/dev/null || echo "No framebuffer devices found"
+        
+        echo "Video devices:"
+        ls -la /dev/video* 2>/dev/null || echo "No video devices found"
+      register: fb_status
       changed_when: false
     
-    - name: Display DRM and framebuffer status
+    - name: Display framebuffer status
       debug:
-        var: drm_status.stdout_lines
-  when: target_os == "ubuntu"
+        var: fb_status.stdout_lines
 
 - name: Create virtual environment directory
   file:
@@ -156,61 +83,16 @@
       - urllib3
     virtualenv: "{{ venv_path }}"
 
-- name: Rebuild pygame with proper SDL2 support (Ubuntu)
-  block:
-    - name: Uninstall existing pygame
-      pip:
-        name: pygame
-        state: absent
-        virtualenv: "{{ venv_path }}"
-      ignore_errors: yes
-    
-    - name: Clear pip cache
-      shell: "{{ venv_path }}/bin/pip cache purge"
-      ignore_errors: yes
-    
-    - name: Install build dependencies for pygame compilation
-      apt:
-        name:
-          - build-essential
-          - python3-dev
-          - libfreetype6-dev
-          - libportmidi-dev
-          - libjpeg-dev
-          - libpng-dev
-        state: present
-    
-    - name: Install pygame with proper SDL2 libraries (from source)
-      pip:
-        name: pygame
-        virtualenv: "{{ venv_path }}"
-        extra_args: "--force-reinstall --no-cache-dir --no-binary=pygame"
-      environment:
-        # Ensure pygame uses system SDL2 libraries
-        SDL_CONFIG: "/usr/bin/sdl2-config"
-        PKG_CONFIG_PATH: "/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig"
-      register: pygame_source_install
-      ignore_errors: yes
-    
-    - name: Install pygame binary as fallback if source build failed
-      pip:
-        name: pygame
-        virtualenv: "{{ venv_path }}"
-        extra_args: "--force-reinstall --no-cache-dir"
-      when: pygame_source_install.failed
-    
-    - name: Verify pygame installation
-      shell: "{{ venv_path }}/bin/python -c 'import pygame; print(f\"Pygame {pygame.version.ver} installed successfully\")'"
-      register: pygame_verify
-      changed_when: false
-    
-    - name: Display pygame installation result
-      debug:
-        msg: "{{ pygame_verify.stdout }}"
-  when: target_os == "ubuntu"
-
-- name: Install pygame normally for Raspberry Pi OS
+- name: Install pygame for Raspberry Pi OS
   pip:
     name: pygame
     virtualenv: "{{ venv_path }}"
-  when: target_os == "raspios"
+
+- name: Verify pygame installation
+  shell: "{{ venv_path }}/bin/python -c 'import pygame; print(f\"Pygame {pygame.version.ver} installed successfully\")'"
+  register: pygame_verify
+  changed_when: false
+
+- name: Display pygame installation result
+  debug:
+    msg: "{{ pygame_verify.stdout }}"
