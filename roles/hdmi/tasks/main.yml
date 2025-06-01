@@ -111,60 +111,81 @@
   loop: "{{ config_locations.results }}"
   when: item.stat.exists
 
-- name: Disable all VC4 overlays to use legacy framebuffer driver
-  lineinfile:
+- name: Disable vc4-kms-v3d overlay (prevents framebuffer)
+  replace:
     path: "{{ boot_config_path }}"
-    regexp: '^dtoverlay=vc4'
-    line: '#dtoverlay=vc4-kms-v3d'
+    regexp: '^dtoverlay=vc4-kms-v3d$'
+    replace: '#dtoverlay=vc4-kms-v3d'
   notify: reboot
   when: boot_config_path is defined
 
-- name: Disable vc4-fkms-v3d overlay specifically
-  lineinfile:
+- name: Disable vc4-fkms-v3d overlay (prevents framebuffer)  
+  replace:
     path: "{{ boot_config_path }}"
-    regexp: '^dtoverlay=vc4-fkms-v3d'
-    line: '#dtoverlay=vc4-fkms-v3d'
+    regexp: '^dtoverlay=vc4-fkms-v3d$'
+    replace: '#dtoverlay=vc4-fkms-v3d'
   notify: reboot
   when: boot_config_path is defined
 
-- name: Configure legacy framebuffer dual HDMI setup
+- name: Remove existing HDMI configuration to avoid conflicts
   blockinfile:
     path: "{{ boot_config_path }}"
     marker: "# {mark} ANSIBLE MANAGED DUAL HDMI CONFIGURATION"
+    state: absent
+  when: boot_config_path is defined
+
+- name: Configure dual HDMI with working framebuffer setup
+  blockinfile:
+    path: "{{ boot_config_path }}"
+    marker: "# {mark} ANSIBLE MANAGED DUAL HDMI CONFIGURATION"
+    insertafter: EOF
     block: |
-      # Dual HDMI Configuration using LEGACY framebuffer driver
-      # This creates separate /dev/fb0 and /dev/fb1 devices
       
-      # Force both HDMI ports to be detected and active
+      # === DUAL HDMI FRAMEBUFFER CONFIGURATION ===
+      # Disable VC4 overlays for legacy framebuffer support
+      #dtoverlay=vc4-kms-v3d
+      #dtoverlay=vc4-fkms-v3d
+      
+      # Force both HDMI ports to be active
       hdmi_force_hotplug:0=1
       hdmi_force_hotplug:1=1
       
-      # HDMI0 (fb0) - Console/SSH access - 1920x1080
+      # HDMI0 configuration (fb0 - Console)
       hdmi_group:0=1
       hdmi_mode:0=16
       hdmi_drive:0=2
       
-      # HDMI1 (fb1) - Slideshow display - 1920x1080  
+      # HDMI1 configuration (fb1 - Slideshow)
       hdmi_group:1=1
-      hdmi_mode:1=16
+      hdmi_mode:1=16  
       hdmi_drive:1=2
       
-      # Enable dual display with legacy driver
+      # Enable dual framebuffer mode
       max_framebuffers=2
       framebuffer_width=1920
       framebuffer_height=1080
       
-      # Use legacy framebuffer driver (NO VC4!)
-      # Comment out or remove any vc4 overlays for separate fb devices
-      #dtoverlay=vc4-kms-v3d
-      #dtoverlay=vc4-fkms-v3d
-      
-      # Sufficient GPU memory for dual displays  
+      # GPU memory for dual displays
       gpu_mem=128
       
-      # Disable overscan for clean output
+      # Clean output
       disable_overscan=1
   notify: reboot
+  when: boot_config_path is defined
+
+- name: Verify boot configuration was applied
+  shell: |
+    echo "=== CURRENT BOOT CONFIG ==="
+    grep -E "(hdmi_|max_framebuffers|gpu_mem)" {{ boot_config_path }} || echo "No HDMI config found"
+    echo ""
+    echo "=== CHECKING FOR VC4 OVERLAYS ==="
+    grep -E "dtoverlay=vc4" {{ boot_config_path }} || echo "No VC4 overlays found"
+  register: config_verification
+  when: boot_config_path is defined
+
+- name: Display boot configuration verification
+  debug:
+    var: config_verification.stdout_lines
   when: boot_config_path is defined
 
 - name: Check for cmdline.txt location

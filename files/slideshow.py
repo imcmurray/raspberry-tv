@@ -218,11 +218,25 @@ for attempt, config in enumerate(display_drivers_to_try):
         # Reinitialize pygame with new driver
         pygame.quit()
         
+        # Special initialization for Raspberry Pi
+        if driver == 'fbcon':
+            early_logger.info(f"Using Raspberry Pi specific fbcon initialization")
+            # Force fbcon driver with specific environment
+            os.environ['SDL_VIDEODRIVER'] = 'fbcon'
+            if fbdev:
+                os.environ['SDL_FBDEV'] = fbdev
+            os.environ['SDL_NOMOUSE'] = '1'
+            # Additional Pi-specific settings
+            os.environ['SDL_FBCON_MWGFX'] = '0'  # Disable graphics acceleration
+            
         # Force re-initialization with retries
         for init_attempt in range(3):
             try:
                 pygame.init()
-                if pygame.get_init():
+                # Initialize display module specifically
+                pygame.display.init()
+                
+                if pygame.get_init() and pygame.display.get_init():
                     early_logger.info(f"Pygame initialized successfully on attempt {init_attempt + 1}")
                     break
                 else:
@@ -236,9 +250,30 @@ for attempt, config in enumerate(display_drivers_to_try):
             continue
         
         early_logger.info(f"Attempting to create display with {driver}...")
-        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-        screen_width, screen_height = screen.get_size()
-        early_logger.info(f"SUCCESS! Created display: {screen_width}x{screen_height} using {driver}")
+        
+        # Try different display modes for Raspberry Pi
+        display_modes_to_try = [
+            ((0, 0), pygame.FULLSCREEN),  # Auto fullscreen
+            ((1920, 1080), pygame.FULLSCREEN),  # Explicit fullscreen
+            ((1920, 1080), 0),  # Windowed (for testing)
+        ]
+        
+        screen = None
+        for mode_size, mode_flags in display_modes_to_try:
+            try:
+                early_logger.info(f"Trying display mode: {mode_size} with flags {mode_flags}")
+                screen = pygame.display.set_mode(mode_size, mode_flags)
+                screen_width, screen_height = screen.get_size()
+                early_logger.info(f"SUCCESS! Created display: {screen_width}x{screen_height} using {driver}")
+                break
+            except Exception as mode_error:
+                early_logger.warning(f"Display mode {mode_size} failed: {mode_error}")
+                continue
+        
+        if screen is None:
+            early_logger.error(f"All display modes failed for {driver}")
+            continue
+            
         successful_driver = driver
         
         # Test display briefly
