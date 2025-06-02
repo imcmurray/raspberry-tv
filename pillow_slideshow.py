@@ -24,10 +24,17 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 # from selenium.webdriver.common.by import By
 # from selenium.webdriver.support.ui import WebDriverWait
 # from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import WebDriverException, TimeoutException as SeleniumTimeoutException
+from PIL import UnidentifiedImageError
 
 
 # Basic logging setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Consider making the log level configurable (e.g., from config file or env var)
+# For production, INFO might be too verbose for some operations, DEBUG is for development.
+logging.basicConfig(
+    level=os.environ.get("LOGLEVEL", "INFO").upper(), 
+    format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+)
 
 FB_DEVICE = "/dev/fb1"
 CONFIG_FILE_PATH = '/etc/slideshow.conf'
@@ -39,8 +46,8 @@ need_refetch = threading.Event()
 processed_slides_global_for_cleanup = [] # For atexit cleanup
 
 # Font and Text Cache Configuration
-FONT_PATH_PRIMARY = "freesansbold.ttf"
-FONT_PATH_FALLBACK = "DejaVuSans.ttf"
+FONT_PATH_PRIMARY = "freesansbold.ttf" 
+FONT_PATH_FALLBACK = "DejaVuSans.ttf" 
 TEXT_CACHE_MAX_SIZE = 50
 text_cache = {}
 last_datetime_minute = None
@@ -82,7 +89,7 @@ def get_font(size):
             logging.warning(f"Fallback font '{FONT_PATH_FALLBACK}' not found at size {size}. Using Pillow's default.")
             try:
                 # Pillow's default font is very basic and might not support sizes well.
-                return ImageFont.load_default()
+                return ImageFont.load_default() 
             except Exception as e:
                  logging.error(f"Could not load any font, including Pillow's default: {e}")
                  return None # Should not happen with load_default unless Pillow is broken
@@ -94,7 +101,7 @@ def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_
     """
     font_size_mapping = {"small": 24, "medium": 36, "large": 48, "xlarge": 60}
     pixel_size = font_size_mapping.get(font_size_str.lower(), 36) # Default to medium
-
+    
     font = get_font(pixel_size)
     if not font:
         logging.error("Cannot render text: Font not loaded.")
@@ -120,7 +127,7 @@ def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_
 
 
     surface_height = text_height + (2 * text_padding)
-
+    
     # Determine surface width
     if screen_width_for_scrolling and text_width < screen_width_for_scrolling:
         # For non-scrolling text that should fit a line, or scrolling text shorter than screen
@@ -136,7 +143,7 @@ def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_
     if text_bg_color_hex:
         bg_color_rgba = hex_to_rgb(text_bg_color_hex, alpha=200) # Default 200/255 alpha for background
         # Adjust radius based on surface height for a pleasant look
-        radius = min(10, surface_height // 3)
+        radius = min(10, surface_height // 3) 
         try:
             draw.rounded_rectangle([(0,0), (surface_width, surface_height)], radius=radius, fill=bg_color_rgba)
         except TypeError: # Older Pillow might not support float radius in rounded_rectangle or specific args
@@ -151,7 +158,7 @@ def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_
     text_y = text_padding # Align to top-left with padding. font.getbbox accounts for ascenders/descenders.
 
     draw.text((text_x, text_y), text_content, font=font, fill=text_color_rgb)
-
+    
     logging.info(f"Rendered text '{text_content[:30]}...' to {surface_width}x{surface_height} surface.")
     return txt_surface, original_text_width
 
@@ -179,7 +186,7 @@ def get_cached_text_surface(text_params, screen_width_for_text_area, force_refre
     color = text_params.get('color', '#FFFFFF')
     bg_color = text_params.get('bg_color') # Can be None
     is_scrolling = text_params.get('scroll', False)
-
+    
     # Use screen_width_for_text_area if text is not scrolling or if it's shorter than this width
     # This helps in creating surfaces that fit the intended display line for non-scrolling text.
     # For scrolling text, if it's very long, its own width will be used.
@@ -188,7 +195,7 @@ def get_cached_text_surface(text_params, screen_width_for_text_area, force_refre
 
     cache_key_parts = [current_text, font_size, color, bg_color]
     # Only include render_width_param in key if it's used for rendering (i.e. non-scrolling or short scrolling)
-    if render_width_param:
+    if render_width_param: 
         cache_key_parts.append(render_width_param)
     cache_key = tuple(cache_key_parts)
 
@@ -199,7 +206,7 @@ def get_cached_text_surface(text_params, screen_width_for_text_area, force_refre
 
     # Render the text
     text_surface, original_text_width = render_text_to_surface(
-        current_text, font_size, color, bg_color,
+        current_text, font_size, color, bg_color, 
         screen_width_for_scrolling=render_width_param,
         text_padding=text_params.get('padding', 5)
     )
@@ -211,7 +218,7 @@ def get_cached_text_surface(text_params, screen_width_for_text_area, force_refre
         text_cache[cache_key] = (text_surface, original_text_width)
         logging.debug(f"Cached new text surface for: {current_text[:30]}...")
         return text_surface, original_text_width
-
+    
     return None, 0
 
 
@@ -246,13 +253,15 @@ def fetch_document(couchdb_url, tv_uuid):
         elif e.response.status_code == 401:
             logging.error(f"Unauthorized access to document for TV UUID: {tv_uuid}. Check credentials/permissions.")
     except requests.exceptions.ConnectionError as e:
-        logging.error(f"Connection error fetching document {doc_url}: {e}")
+        logging.error(f"Connection error fetching document {doc_url}: {e}", exc_info=True)
     except requests.exceptions.Timeout as e:
-        logging.error(f"Timeout fetching document {doc_url}: {e}")
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching document {doc_url}: {e}")
+        logging.error(f"Timeout fetching document {doc_url}: {e}", exc_info=True)
+    except requests.exceptions.RequestException as e: # Catch other requests-related errors
+        logging.error(f"Generic error fetching document {doc_url}: {e}", exc_info=True)
     except json.JSONDecodeError as e:
-        logging.error(f"Error decoding JSON from document {doc_url}: {e}")
+        logging.error(f"Error decoding JSON from document {doc_url}: {e}", exc_info=True)
+    except Exception as e: # Catch any other unexpected errors
+        logging.critical(f"Unexpected error in fetch_document for {doc_url}: {e}", exc_info=True)
     return None
 
 def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
@@ -288,22 +297,21 @@ def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
                             else:
                                 logging.debug(f"Received non-JSON line from changes feed: {decoded_line}")
                         except json.JSONDecodeError as e:
-                            logging.warning(f"Error decoding JSON from changes feed line: '{line.decode('utf-8', errors='ignore')}': {e}")
+                            logging.warning(f"Error decoding JSON from changes feed line: '{line.decode('utf-8', errors='ignore')}': {e}", exc_info=True)
                         except Exception as e:
-                            logging.error(f"Unexpected error processing change line: {e}")
-        except requests.exceptions.HTTPError as e:
-            logging.error(f"HTTP error watching changes feed: {e.response.status_code} {e.response.reason}. Retrying in 30s.")
-        except requests.exceptions.ConnectionError as e:
-            logging.error(f"Connection error watching changes feed: {e}. Retrying in 30s.")
-        except requests.exceptions.Timeout as e:
-            logging.warning(f"Timeout watching changes feed (may be normal due to heartbeat): {e}. Reconnecting.")
-            # No sleep here, just reconnect immediately for timeouts if using heartbeat
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error watching changes feed: {e}. Retrying in 30s.")
-        except Exception as e:
-            logging.error(f"Unexpected error in watch_changes loop: {e}. Retrying in 30s.")
-
-        logging.info("Attempting to reconnect to changes feed after 30 seconds...")
+                            logging.error(f"Unexpected error processing change line: {e}", exc_info=True)
+        except requests.exceptions.HTTPError as e: # Specific HTTP error
+            logging.error(f"HTTP error {e.response.status_code} watching changes feed ({changes_url}): {e.response.reason}. Retrying in 30s.", exc_info=True)
+        except requests.exceptions.ConnectionError as e: # Connection error
+            logging.error(f"Connection error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+        except requests.exceptions.Timeout as e: # This can include read timeouts on the stream
+            logging.warning(f"Timeout watching changes feed ({changes_url}): {e}. Will attempt to reconnect.", exc_info=True)
+        except requests.exceptions.RequestException as e: # Other requests errors
+            logging.error(f"RequestException error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+        except Exception as e: # Catch any other unexpected errors
+            logging.critical(f"Unexpected critical error in watch_changes loop ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+        
+        logging.info(f"Attempting to reconnect to changes feed ({changes_url}) after 30 seconds...")
         time.sleep(30)
 
 def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width, screen_height):
@@ -319,7 +327,7 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
 
     attachment_url = f"{couchdb_url.rstrip('/')}/{tv_uuid}/{content_name}"
     logging.info(f"Fetching image attachment for slide '{slide_name}' from: {attachment_url}")
-
+    
     session = get_requests_session()
     try:
         response = session.get(attachment_url, timeout=15) # Increased timeout for image download
@@ -331,7 +339,7 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
         if img_width == 0 or img_height == 0:
             logging.warning(f"Image '{content_name}' for slide '{slide_name}' has zero dimension. Skipping.")
             return None
-
+        
         # Convert to RGB if it's not (e.g. RGBA, P, L) to ensure compatibility with background
         if image.mode not in ('RGB', 'L'): # Allow L mode (grayscale) as it can be pasted on RGB
              if image.mode == 'RGBA':
@@ -356,7 +364,7 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
             scale_factor = screen_width / img_width
         else: # Image is taller or same aspect ratio
             scale_factor = screen_height / img_height
-
+        
         new_width = int(img_width * scale_factor)
         new_height = int(img_height * scale_factor)
 
@@ -389,14 +397,14 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
             # Determine the width of the area available for this text (e.g., full screen or a column)
             # For now, assume text can use full screen_width if scrolling, or is placed relative to it.
             text_render_surface, text_original_width = get_cached_text_surface(
-                text_params,
-                screen_width_for_text_area=screen_width
+                text_params, 
+                screen_width_for_text_area=screen_width 
             )
 
             if not text_render_surface:
                 logging.warning(f"Could not render text: '{text_content[:30]}...' for slide '{slide_name}'.")
                 continue
-
+            
             if text_params.get('scroll', False):
                 slide_doc['scrolling_texts'].append({
                     'surface': text_render_surface,
@@ -431,12 +439,12 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
                     pos_x, pos_y = (screen_width - surf_width) // 2, screen_height - surf_height - margin
                 elif text_align == 'bottom_right':
                     pos_x, pos_y = screen_width - surf_width - margin, screen_height - surf_height - margin
-
+                
                 logging.info(f"Compositing non-scrolling text '{text_content[:30]}...' at ({pos_x},{pos_y}) on slide '{slide_name}'.")
                 # Ensure processed_image is RGBA if it's not already for alpha_composite
                 if slide_doc['processed_image'].mode != 'RGBA':
                      slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGBA')
-
+                
                 # Create a temporary canvas to composite onto, if text_render_surface is smaller
                 # This ensures correct alpha blending if text_render_surface has its own background
                 temp_composite_layer = Image.new('RGBA', slide_doc['processed_image'].size, (0,0,0,0))
@@ -450,18 +458,18 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
         return slide_doc
 
     except requests.exceptions.HTTPError as e:
-        logging.error(f"HTTP error fetching image {attachment_url} for slide '{slide_name}': {e.response.status_code} {e.response.reason}")
+        logging.error(f"HTTP error {e.response.status_code} fetching image {attachment_url} for slide '{slide_name}': {e.response.reason}", exc_info=True)
     except requests.exceptions.ConnectionError as e:
-        logging.error(f"Connection error fetching image {attachment_url} for slide '{slide_name}': {e}")
+        logging.error(f"Connection error fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
     except requests.exceptions.Timeout as e:
-        logging.error(f"Timeout fetching image {attachment_url} for slide '{slide_name}': {e}")
+        logging.error(f"Timeout fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching image {attachment_url} for slide '{slide_name}': {e}")
-    except IOError as e: # Pillow-related errors (e.g., cannot open image)
-        logging.error(f"Error processing image {content_name} for slide '{slide_name}': {e}")
+        logging.error(f"Request error fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+    except (IOError, UnidentifiedImageError) as e: 
+        logging.error(f"Pillow error processing image {content_name} for slide '{slide_name}': {e}", exc_info=True)
     except Exception as e:
-        logging.error(f"Unexpected error processing image slide '{slide_name}' with image '{content_name}': {e}")
-
+        logging.critical(f"Unexpected error processing image slide '{slide_name}' (image: {content_name}): {e}", exc_info=True)
+    
     return None
 
 def perform_fade_transition(fb_path, screen_width, screen_height, bpp, outgoing_image_canvas, incoming_image_canvas, duration_ms):
@@ -553,10 +561,10 @@ def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused
 
     attachment_url = f"{couchdb_url.rstrip('/')}/{tv_uuid}/{content_name}"
     logging.info(f"Fetching video attachment for slide '{slide_name}' from: {attachment_url}")
-
+    
     session = get_requests_session()
     temp_file_path_actual = None # To store the actual path for cleanup if NamedTemporaryFile object is lost
-
+    
     try:
         response = session.get(attachment_url, timeout=120, stream=True) # Increased timeout for potentially large videos
         response.raise_for_status()
@@ -566,8 +574,8 @@ def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
             for chunk in response.iter_content(chunk_size=8192*4): # Larger chunk size for videos
                 temp_file.write(chunk)
-            temp_file_path_actual = temp_file.name
-
+            temp_file_path_actual = temp_file.name 
+        
         logging.info(f"Video '{content_name}' saved to temporary file: {temp_file_path_actual}")
         slide_doc['video_temp_path'] = temp_file_path_actual
 
@@ -587,8 +595,8 @@ def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused
         if slide_doc['video_fps'] is None or slide_doc['video_fps'] == 0 or \
            slide_doc['video_width'] == 0 or slide_doc['video_height'] == 0:
              logging.warning(f"Video '{content_name}' has invalid metadata (fps/width/height is 0 or None). May not play correctly.")
-
-        slide_doc['content_type'] = 'video'
+        
+        slide_doc['content_type'] = 'video' 
         # Define cleanup function using default argument to capture current temp_file_path
         slide_doc['cleanup_func'] = lambda path=temp_file_path_actual: (
             logging.info(f"Cleaning up temporary video file: {path}"),
@@ -597,19 +605,27 @@ def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused
         logging.info(f"Successfully prepared video slide '{slide_name}' from '{content_name}'.")
         return slide_doc
 
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"HTTP error {e.response.status_code} fetching video {attachment_url} for slide '{slide_name}': {e.response.reason}", exc_info=True)
+    except requests.exceptions.ConnectionError as e:
+        logging.error(f"Connection error fetching video {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+    except requests.exceptions.Timeout as e:
+        logging.error(f"Timeout fetching video {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching video {attachment_url} for slide '{slide_name}': {e}")
-    except IOError as e:
-        logging.error(f"IOError saving video {content_name} for slide '{slide_name}': {e}")
+        logging.error(f"Request error fetching video {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+    except IOError as e: 
+        logging.error(f"IOError saving video {content_name} for slide '{slide_name}': {e}", exc_info=True)
+    except cv2.error as e:
+        logging.error(f"OpenCV error processing video {content_name} for slide '{slide_name}': {e}", exc_info=True)
     except Exception as e:
-        logging.error(f"Unexpected error preparing video slide '{slide_name}': {e}")
-
+        logging.critical(f"Unexpected error preparing video slide '{slide_name}' (video: {content_name}): {e}", exc_info=True)
+    
     if temp_file_path_actual and os.path.exists(temp_file_path_actual):
         try:
+            logging.debug(f"Cleaning up orphaned temp video file due to error: {temp_file_path_actual}")
             os.unlink(temp_file_path_actual)
-            logging.info(f"Cleaned up orphaned temp video file during error: {temp_file_path_actual}")
         except OSError as unlink_e:
-            logging.error(f"Error unlinking orphaned temp video file {temp_file_path_actual}: {unlink_e}")
+            logging.error(f"Error unlinking orphaned temp video file {temp_file_path_actual} during error handling: {unlink_e}", exc_info=True)
     return None
 
 def capture_website(url, target_screen_width, target_screen_height, timeout=30):
@@ -637,7 +653,7 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
     try:
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(timeout)
-
+        
         logging.info(f"Navigating to {url}")
         driver.get(url)
 
@@ -645,7 +661,7 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
         # A simple time.sleep or waiting for document.readyState can be used.
         # More complex waits (e.g. for specific elements) could be added if needed.
         time.sleep(5) # Give some time for JS rendering, adjust as needed
-
+        
         # Check document.readyState
         for _ in range(timeout // 2):
             if driver.execute_script("return document.readyState") == "complete":
@@ -663,15 +679,15 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
 
         logging.info(f"Capturing screenshot for {url}")
         screenshot_data = driver.get_screenshot_as_png()
-
+        
         raw_image = Image.open(BytesIO(screenshot_data)).convert('RGB')
-
+        
         # Intermediate processing: Crop to 1920x1080 if capture was set to that window size
         # This ensures a consistent aspect ratio for the "raw" capture before final scaling.
         # If the content is shorter than 1080px, it will be pasted onto a white background.
         intermediate_width, intermediate_height = 1920, 1080
         intermediate_image = Image.new('RGB', (intermediate_width, intermediate_height), (255, 255, 255))
-
+        
         # Crop the raw image to fit into intermediate_width x intermediate_height
         # This assumes raw_image is at least intermediate_width wide due to window size setting.
         # If raw_image is shorter than intermediate_height, it pastes what's available.
@@ -688,7 +704,7 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
             scale_factor = target_screen_width / img_width
         else:
             scale_factor = target_screen_height / img_height
-
+        
         new_width = int(img_width * scale_factor)
         new_height = int(img_height * scale_factor)
 
@@ -697,24 +713,36 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
             return None
 
         scaled_image = intermediate_image.resize((new_width, new_height), Image.LANCZOS)
-
+        
         final_canvas = Image.new('RGB', (target_screen_width, target_screen_height), (0, 0, 0)) # Black background
         x = (target_screen_width - new_width) // 2
         y = (target_screen_height - new_height) // 2
         final_canvas.paste(scaled_image, (x, y))
-
+        
         logging.info(f"Successfully captured and processed website {url} to {target_screen_width}x{target_screen_height} canvas.")
         return final_canvas
-
-    except Exception as e:
-        logging.error(f"Error capturing website {url}: {e}")
-        # More specific error handling for Selenium exceptions can be added here
-        # (e.g., TimeoutException, WebDriverException)
-        return None
+    
+    except SeleniumTimeoutException as e:
+        logging.error(f"Selenium timeout capturing website {url}: {e}", exc_info=True)
+    except WebDriverException as e: # More general Selenium exception
+        logging.error(f"Selenium WebDriverException capturing website {url}: {e}", exc_info=True)
+    except IOError as e: # Pillow related errors
+        logging.error(f"Pillow error processing website screenshot for {url}: {e}", exc_info=True)
+    except Exception as e: # Catch any other unexpected errors
+        logging.critical(f"Unexpected error in capture_website for {url}: {e}", exc_info=True)
+    
+    # Explicitly return None on caught exceptions before finally block,
+    # because finally does not alter the return value of the try block if an exception is re-raised or a new one occurs there.
+    # However, if an exception occurs in 'finally' itself, that would supersede.
+    # Here, we want to ensure None is returned if any error occurred in the try block.
+    return None
     finally:
         if driver:
-            driver.quit()
-            logging.info(f"WebDriver quit for {url}")
+            try:
+                driver.quit()
+                logging.info(f"WebDriver quit for {url}")
+            except Exception as e:
+                logging.error(f"Error quitting WebDriver for {url}: {e}", exc_info=True)
 
 
 def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, config_unused):
@@ -740,7 +768,7 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, conf
             # or that they are re-scaled if needed (though current cache stores final canvas)
             # If screen dimensions can change dynamically, the cache might need to store intermediate images
             # or re-process. For now, let's assume the cached image is display-ready.
-            slide_doc['processed_image'] = cached_item['image'].copy()
+            slide_doc['processed_image'] = cached_item['image'].copy() 
             # Apply text overlays (as they are not part of the website screenshot cache)
             # This reuses the text overlay logic from fetch_and_process_image_slide structure
             slide_doc['scrolling_texts'] = []
@@ -761,7 +789,7 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, conf
                     # ... (include all other alignment options as in fetch_and_process_image_slide)
                     elif text_align == 'bottom_center': pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin
                     else: pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin # Default to bottom_center
-
+                    
                     if slide_doc['processed_image'].mode != 'RGBA': slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGBA')
                     temp_layer = Image.new('RGBA', slide_doc['processed_image'].size, (0,0,0,0))
                     temp_layer.paste(text_render_surface, (pos_x, pos_y))
@@ -775,14 +803,14 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, conf
 
     if captured_image_canvas:
         slide_doc['processed_image'] = captured_image_canvas
-
+        
         # Cache Update
         if len(website_screenshot_cache) >= MAX_WEBSITE_CACHE_ENTRIES:
             # Simple FIFO eviction by finding the oldest entry
             oldest_key = min(website_screenshot_cache, key=lambda k: website_screenshot_cache[k]['timestamp'])
             logging.info(f"Website cache full. Removing oldest entry for URL hash: {oldest_key}")
             del website_screenshot_cache[oldest_key]
-
+        
         website_screenshot_cache[cache_key] = {'image': captured_image_canvas.copy(), 'timestamp': time.time()}
         logging.info(f"Cached new screenshot for {url}")
 
@@ -835,28 +863,28 @@ def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_heig
     for i, slide_def_orig in enumerate(raw_slides):
         slide_def = slide_def_orig.copy() # Work with a copy
         slide_def['transition_time_ms'] = int(slide_def_orig.get('transition_time_ms', DEFAULT_TRANSITION_TIME_MS))
-
-        slide_type = slide_def.get('type', 'image')
+        
+        slide_type = slide_def.get('type', 'image') 
         slide_name = slide_def.get('name', f'Unnamed Slide {i+1}')
         logging.info(f"Processing Slide {i+1}: Name='{slide_name}', Type='{slide_type}', Transition: {slide_def['transition_time_ms']}ms")
 
         processed_slide_content = None
         if slide_type == 'image':
-            if screen_width and screen_height:
+            if screen_width and screen_height: 
                 processed_slide_content = fetch_and_process_image_slide(
                     slide_def, couchdb_url, tv_uuid, screen_width, screen_height
                 )
             else:
                 logging.warning(f"Skipping image slide '{slide_name}' due to missing screen dimensions.")
-
+        
         elif slide_type == 'website':
             if screen_width and screen_height:
                 processed_slide_content = fetch_and_process_website_slide(
-                    slide_def, screen_width, screen_height, app_config
+                    slide_def, screen_width, screen_height, app_config 
                 )
             else:
                 logging.warning(f"Skipping website slide '{slide_name}' due to missing screen dimensions.")
-
+        
         elif slide_type == 'video':
             # Video slides don't strictly need screen_width/height for initial prep,
             # but they will for display. The main loop will handle frame scaling.
@@ -922,7 +950,7 @@ def load_config(config_path):
         if not manager_url: missing_keys.append('manager_url')
         logging.error(f"Missing essential keys in [settings] section: {', '.join(missing_keys)} in {config_path}")
         exit(1) # Exiting as per requirement
-
+    
     loaded_settings = {
         'couchdb_url': couchdb_url,
         'tv_uuid': tv_uuid,
@@ -967,28 +995,29 @@ def get_framebuffer_info(fb_path):
     #    __u32 accel;            /* Type of acceleration available */
     #    __u16 reserved[3];      /* Reserved for future use  */
     # };
-    # For now, continue returning mock data but structure it for potential future use
+    # For now, continue returning mock data but structure it for potential future use.
+    # If fb_obj were real, it should be opened here (or earlier) and closed on application exit (e.g. atexit).
     fb_info = {
         'width': 1920,
         'height': 1080,
         'bpp': 32,
-        'fb_obj': None, # Placeholder for actual framebuffer file object or mmap object
-        'img_mode': 'RGB' # Default Pillow mode to convert to for framebuffer
-        # Add other necessary fields like 'line_length' if real ioctl is used
+        'fb_obj': None, # Placeholder for actual framebuffer file object or mmap object.
+        'img_mode': 'RGB' # Default Pillow mode to convert to for framebuffer.
+        # Add other necessary fields like 'line_length' if real ioctl is used.
     }
-    # Determine img_mode based on bpp, this is a simplification
+    # Determine img_mode based on bpp, this is a simplification:
     if fb_info['bpp'] == 32:
         fb_info['img_mode'] = 'RGBA' # Or 'RGB' if alpha is not used/supported by fb
     elif fb_info['bpp'] == 24:
         fb_info['img_mode'] = 'RGB'
     elif fb_info['bpp'] == 16:
         fb_info['img_mode'] = 'RGB;16' # Example, might be specific (e.g. RGB565)
-
-    logging.info(f"Mock framebuffer info: {fb_info['width']}x{fb_info['height']}, {fb_info['bpp']}bpp, Pillow mode: {fb_info['img_mode']}")
+    
+    logging.info(f"Mock framebuffer info: {fb_info['width']}x{fb_info['height']}, {fb_info['bpp']}bpp, Pillow mode: {fb_info['img_mode']}. FB object is currently: {fb_info['fb_obj']}.")
     return fb_info
 
 
-def write_to_framebuffer(fb_obj_unused, image_data, screen_width, screen_height, bpp_unused, img_mode_unused):
+def write_to_framebuffer(fb_obj_unused, image_data, screen_width, screen_height, bpp_unused, img_mode_unused): # fb_obj would be used if real
     """
     Placeholder function to write image data (Pillow Image) to the framebuffer.
     fb_obj would be the opened framebuffer file or mmap object.
@@ -1037,19 +1066,19 @@ def apply_text_and_scroll(base_canvas, slide_text_overlays, scroll_positions, sc
         text_surface = text_info['surface']
         original_text_width = text_info['original_width']
         params = text_info['params']
-
+        
         if text_surface is None:
             continue
 
         # Calculate new scroll position
         scroll_positions[idx] -= SCROLL_SPEED_PPS * delta_time
         current_x = int(scroll_positions[idx])
-
+        
         # Reset if scrolled off screen
         if current_x + original_text_width < 0:
             scroll_positions[idx] = screen_width
             current_x = screen_width
-
+        
         text_y_position = params.get('y_position', screen_height - text_surface.height - params.get('margin', 10)) # Default bottom
         if isinstance(text_y_position, str): # e.g. "50%"
             try: text_y_position = int(screen_height * (int(text_y_position.rstrip('%')) / 100.0))
@@ -1072,7 +1101,7 @@ def main():
     # Load configuration
     app_config = load_config(CONFIG_FILE_PATH)
     logging.info(f"Loaded configuration: {app_config}")
-
+    
     couchdb_url = app_config['couchdb_url']
     tv_uuid = app_config['tv_uuid']
 
@@ -1096,10 +1125,10 @@ def main():
     current_slide_index = 0
     outgoing_slide_canvas = None # Pillow Image of the last displayed frame
     is_running = True
-
+    
     # Initialize scroll positions for all slides (first time)
     # This dict will store {slide_index: {text_overlay_index: scroll_x_position}}
-    slide_scroll_positions = {}
+    slide_scroll_positions = {} 
 
     try:
         while is_running:
@@ -1108,7 +1137,7 @@ def main():
                 logging.info("Change detected, refetching and reprocessing slides.")
                 # Cleanup old temp files from the previous list of slides
                 cleanup_all_temp_files() # Uses global processed_slides_global_for_cleanup
-
+                
                 new_doc = fetch_document(couchdb_url, tv_uuid)
                 if new_doc:
                     current_slides = process_slides_from_doc(new_doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config)
@@ -1118,7 +1147,7 @@ def main():
                 current_slide_index = 0
                 outgoing_slide_canvas = None # Reset transition state
                 slide_scroll_positions = {} # Reset scroll positions for new slides
-
+                
                 if not current_slides:
                     logging.info("No slides after refetch. Displaying placeholder.")
                     placeholder_img = Image.new('RGB', (screen_width, screen_height), "black")
@@ -1158,7 +1187,7 @@ def main():
                 incoming_canvas_for_transition = Image.new('RGB', (screen_width, screen_height), (0,0,0))
             elif slide.get('processed_image'):
                 incoming_canvas_for_transition = slide['processed_image'] # Already has static text
-
+            
             if incoming_canvas_for_transition is None: # Fallback
                  logging.error(f"Slide '{slide_name}' has no content to display. Showing error placeholder.")
                  incoming_canvas_for_transition = Image.new('RGB', (screen_width, screen_height), (128,0,128)) # Magenta
@@ -1179,12 +1208,12 @@ def main():
                         slide_scroll_positions[current_slide_index] = {
                             idx: screen_width for idx, _ in enumerate(slide.get('scrolling_texts', []))
                         }
-
+                    
                     final_display_image = apply_text_and_scroll(
-                        incoming_canvas_for_transition,
-                        slide.get('scrolling_texts', []),
-                        slide_scroll_positions[current_slide_index],
-                        screen_width,
+                        incoming_canvas_for_transition, 
+                        slide.get('scrolling_texts', []), 
+                        slide_scroll_positions[current_slide_index], 
+                        screen_width, 
                         0 # delta_time is 0 for initial frame
                     )
                     write_to_framebuffer(fb_info.get('fb_obj'), final_display_image, screen_width, screen_height, bpp, img_mode)
@@ -1202,7 +1231,7 @@ def main():
                 video_path = slide.get('video_temp_path')
                 video_fps = slide.get('video_fps', SCROLL_FPS)
                 video_frame_duration = 1.0 / video_fps if video_fps > 0 else frame_target_duration
-
+                
                 if video_path and os.path.exists(video_path):
                     video_cap = cv2.VideoCapture(video_path)
                     if not video_cap.isOpened():
@@ -1237,11 +1266,11 @@ def main():
                                     else: # Screen is taller or same aspect
                                         new_w = screen_width
                                         new_h = int(new_w / aspect_ratio)
-
+                                    
                                     scaled_video_frame = pillow_frame.resize((new_w, new_h), Image.LANCZOS)
                                     current_display_canvas = Image.new('RGB', (screen_width, screen_height), (0,0,0))
                                     current_display_canvas.paste(scaled_video_frame, ((screen_width - new_w)//2, (screen_height - new_h)//2))
-
+                                    
                                     # Apply text (static & scrolling) to video frame
                                     # Video slides store all text in 'text_overlays', scrolling ones have 'scroll:true'
                                     # Static text is applied by get_cached_text_surface and composited by apply_text_and_scroll
@@ -1249,13 +1278,13 @@ def main():
                                     # For now, let's assume text_overlays are processed by apply_text_and_scroll
                                     # This requires text_overlays to be structured like 'scrolling_texts' items or adapt apply_text_and_scroll
                                     # Re-simplifying: assume video text overlays are defined in 'scrolling_texts' or 'static_texts' in slide_doc
-
+                                    
                                     # Simplified: use `slide.get('text_overlays', [])` and let `apply_text_and_scroll` handle them
                                     # This assumes text_overlays on video are defined similar to scrolling_texts items
                                     # (i.e. pre-rendered surfaces are available or defined to be static/scrolling)
                                     # This part needs careful data structure design from CouchDB.
                                     # For now, let's assume 'text_overlays' are like 'scrolling_texts' for simplicity here.
-
+                                    
                                     # Create a list of text_info dicts for apply_text_and_scroll
                                     # This is a bit of a hack due to differing text structures.
                                     # Ideally, video text would also be pre-processed into 'scrolling_texts' and 'static_texts' (on processed_image)
@@ -1278,7 +1307,7 @@ def main():
                                     final_frame_for_fb = current_display_canvas # Potentially with text
                                     write_to_framebuffer(fb_info.get('fb_obj'), final_frame_for_fb, screen_width, screen_height, bpp, img_mode)
                                     outgoing_slide_canvas = final_frame_for_fb.copy()
-
+                            
                             elapsed_frame_time = time.time() - loop_frame_start_time
                             time.sleep(max(0, video_frame_duration - elapsed_frame_time))
                         video_cap.release()
@@ -1300,25 +1329,25 @@ def main():
                 if slide.get('scrolling_texts'):
                     while (time.time() - slide_start_time) < slide_duration_s:
                         loop_frame_start_time = time.time()
-
+                        
                         current_display_canvas = apply_text_and_scroll(
-                            base_image,
-                            slide.get('scrolling_texts', []),
-                            slide_scroll_positions[current_slide_index],
-                            screen_width,
+                            base_image, 
+                            slide.get('scrolling_texts', []), 
+                            slide_scroll_positions[current_slide_index], 
+                            screen_width, 
                             frame_target_duration # Use fixed frame_target_duration for scroll animation step
                         )
                         write_to_framebuffer(fb_info.get('fb_obj'), current_display_canvas, screen_width, screen_height, bpp, img_mode)
                         outgoing_slide_canvas = current_display_canvas.copy()
-
+                        
                         elapsed_frame_time = time.time() - loop_frame_start_time
                         time.sleep(max(0, frame_target_duration - elapsed_frame_time))
                 else: # Static image/website with no scrolling text
                     # Already displayed by transition or initial write.
                     # Ensure outgoing_slide_canvas is set correctly.
-                    outgoing_slide_canvas = base_image.copy()
+                    outgoing_slide_canvas = base_image.copy() 
                     time.sleep(slide_duration_s)
-
+            
             else: # Fallback for unknown type or missing content
                 logging.warning(f"Slide '{slide_name}' (Type: {slide_type}) has no displayable content. Showing placeholder for duration.")
                 placeholder_img = Image.new('RGB', (screen_width, screen_height), (20,20,20)) # Dark grey
@@ -1335,27 +1364,43 @@ def main():
 
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received. Shutting down.")
+    except KeyboardInterrupt:
+        logging.info("Shutdown requested by user (KeyboardInterrupt).")
+        is_running = False # Ensure loop terminates
+    except Exception as e:
+        logging.critical(f"Unhandled critical error in main loop: {e}", exc_info=True)
+        is_running = False # Ensure loop terminates
     finally:
         logging.info("Exiting main loop. Final cleanup will be handled by atexit.")
-        is_running = False # Signal threads or other parts if any depend on this
-        # fb_obj cleanup should be part of atexit or a dedicated fb_manager class
+        # is_running = False # This is already set in except blocks, or loop condition handles natural exit
+        if fb_info and fb_info.get('fb_obj'): # Conceptual: close framebuffer if it was opened and stored
+            try:
+                # fb_info['fb_obj'].close() # Example if it were a file object
+                logging.info("Closed framebuffer object (conceptual).")
+            except Exception as e:
+                logging.error(f"Error closing framebuffer object (conceptual): {e}", exc_info=True)
+
 
 # Global list to track slides that need cleanup, managed by process_slides_from_doc
-# This is a simple approach; a more robust system might use a class or explicit registry.
 def cleanup_all_temp_files():
-    logging.info(f"Executing atexit cleanup for {len(processed_slides_global_for_cleanup)} processed slides.")
-    # Create a copy of the list to iterate over, in case cleanup_func modifies the global list
-    # (though lambda for cleanup_func currently doesn't)
-    slides_to_cleanup = list(processed_slides_global_for_cleanup)
-    for slide in slides_to_cleanup:
-        if 'cleanup_func' in slide and callable(slide['cleanup_func']):
+    """Iterates through the global list of processed slides and calls their cleanup functions."""
+    logging.info(f"Executing atexit cleanup for {len(processed_slides_global_for_cleanup)} slides from global list.")
+    # Create a copy for iteration, as the original list might be modified elsewhere (though not typical for atexit)
+    slides_to_clean = list(processed_slides_global_for_cleanup)
+    for slide in slides_to_clean:
+        if callable(slide.get('cleanup_func')):
             try:
+                logging.debug(f"Calling cleanup for slide: {slide.get('name', 'N/A')}")
                 slide['cleanup_func']()
             except Exception as e:
-                logging.error(f"Error during cleanup for slide {slide.get('name', 'N/A')}: {e}")
+                logging.error(f"Error during cleanup for slide {slide.get('name', 'N/A')}: {e}", exc_info=True)
+    processed_slides_global_for_cleanup.clear() # Clear the global list after cleanup attempt
+
 
 if __name__ == "__main__":
     import atexit
+    # Ensure cleanup_all_temp_files is registered to be called when the program exits,
+    # regardless of whether it's a normal exit or due to an unhandled exception (excluding os._exit).
     atexit.register(cleanup_all_temp_files)
     main()
                     d = ImageDraw.Draw(placeholder_image)
@@ -1379,24 +1424,24 @@ if __name__ == "__main__":
                 d = ImageDraw.Draw(placeholder_image)
                 text = "Waiting for slides..."
                 try:
-                    bbox = d.textbbox((0,0), text)
+                    bbox = d.textbbox((0,0), text) 
                     text_width = bbox[2] - bbox[0]
                     text_height = bbox[3] - bbox[1]
                     x = ((screen_width if screen_width else 800) - text_width) / 2
                     y = ((screen_height if screen_height else 600) - text_height) / 2
                     d.text((x, y), text, fill="white")
-                except AttributeError:
+                except AttributeError: 
                      d.text((10,10), text, fill="white")
                 if all([screen_width, screen_height, bpp]):
                      write_to_framebuffer(FB_DEVICE, placeholder_image, screen_width, screen_height, bpp)
-
+            
             slide_duration = 5 # Default duration
             if processed_slides and current_slide_index > 0: # Use duration from the slide just shown
                 # current_slide_index is already incremented, so -1 for current shown slide
-                shown_slide_index = current_slide_index -1
+                shown_slide_index = current_slide_index -1 
                 if shown_slide_index < len(processed_slides):
                      slide_duration = processed_slides[shown_slide_index].get('duration', 5)
-
+            
             logging.debug(f"Waiting for {slide_duration} seconds before next slide.")
             time.sleep(slide_duration)
 
