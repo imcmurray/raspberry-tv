@@ -3,7 +3,7 @@ Description=Slideshow Display
 After=network.target
 
 [Service]
-ExecStart={{ venv_python }} /usr/local/bin/slideshow.py
+ExecStart={{ venv_python }} /usr/local/bin/pillow_slideshow.py
 Restart=always
 User={{ service_user }}
 StandardOutput=journal

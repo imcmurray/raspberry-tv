@@ -6,8 +6,8 @@
 
 - name: Deploy slideshow script
   copy:
-    src: slideshow.py
-    dest: /usr/local/bin/slideshow.py
+    src: pillow_slideshow.py
+    dest: /usr/local/bin/pillow_slideshow.py
     mode: 0755
     owner: "{{ service_user }}"
     group: "{{ service_group }}"
@@ -16,14 +16,6 @@
   copy:
     src: hdmi_sleep.py
     dest: /usr/local/bin/hdmi_sleep.py
-    mode: 0755
-    owner: "{{ service_user }}"
-    group: "{{ service_group }}"
-
-- name: Deploy pygame diagnostic script
-  copy:
-    src: pygame_diagnostic.py
-    dest: /usr/local/bin/pygame_diagnostic.py
     mode: 0755
     owner: "{{ service_user }}"
     group: "{{ service_group }}"

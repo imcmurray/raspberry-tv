@@ -54,21 +54,22 @@ last_datetime_minute = None
 
 # Website Screenshot Cache
 website_screenshot_cache = {}
-WEBSITE_CACHE_EXPIRY_SECONDS = 3600
-MAX_WEBSITE_CACHE_ENTRIES = 10
+WEBSITE_CACHE_EXPIRY_SECONDS = 3600 # Cache website screenshots for 1 hour
+MAX_WEBSITE_CACHE_ENTRIES = 10 # Max number of website screenshots to keep in cache
 
 # Transition Constants
 FADE_STEPS = 25 # Number of steps for fade animation
 DEFAULT_TRANSITION_TIME_MS = 500 # Default duration for slide transitions in milliseconds
 
 # Main Loop Behavior
-SCROLL_FPS = 30  # Frames per second for scrolling text animation
-SCROLL_SPEED_PPS = 100  # Pixels per second for scrolling text
+SCROLL_FPS = 30  # Target frames per second for scrolling text animation
+SCROLL_SPEED_PPS = 100  # Scroll speed in pixels per second for scrolling text
 DEFAULT_SLIDE_DURATION_S = 10  # Default duration for a slide in seconds
 
 
 # Helper to convert hex color to RGB/RGBA tuple
 def hex_to_rgb(hex_color, alpha=None):
+    """Converts a hex color string (e.g., "#RRGGBB") to an RGB or RGBA tuple."""
     hex_color = hex_color.lstrip('#')
     lv = len(hex_color)
     rgb = tuple(int(hex_color[i:i + lv // 3], 16) for i in range(0, lv, lv // 3))
@@ -78,7 +79,16 @@ def hex_to_rgb(hex_color, alpha=None):
 
 
 def get_font(size):
-    """Loads a font, trying primary, fallback, then default."""
+    """
+    Loads a TrueType font from specified paths or a default Pillow font.
+
+    Args:
+        size (int): The desired font size.
+
+    Returns:
+        ImageFont.FreeTypeFont or ImageFont.ImageFont: The loaded font object, 
+                                                       or None if all loading attempts fail.
+    """
     try:
         return ImageFont.truetype(FONT_PATH_PRIMARY, size)
     except IOError:
@@ -88,18 +98,38 @@ def get_font(size):
         except IOError:
             logging.warning(f"Fallback font '{FONT_PATH_FALLBACK}' not found at size {size}. Using Pillow's default.")
             try:
-                # Pillow's default font is very basic and might not support sizes well.
+                # Pillow's default font is very basic and might not support sizes well for direct size setting.
+                # ImageFont.load_default() returns a built-in bitmap font that's not scalable by size parameter here.
+                # For a scalable default if truetype fonts fail, consider bundling a known-good .ttf file.
+                # Or, use a very simple truetype font if available on most systems e.g. "arial.ttf" on Windows.
+                # For now, if specific fonts fail, load_default() is the last resort.
                 return ImageFont.load_default() 
             except Exception as e:
-                 logging.error(f"Could not load any font, including Pillow's default: {e}")
-                 return None # Should not happen with load_default unless Pillow is broken
+                 logging.error(f"Could not load any font, including Pillow's default: {e}", exc_info=True)
+                 return None 
 
-def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_color_hex=None, screen_width_for_scrolling=None, text_padding=5):
+def render_text_to_surface(text_content, font_size_str, text_color_hex, text_bg_color_hex=None, text_align_surface_width=None, text_padding=5):
     """
-    Renders text onto a new Pillow Image surface with a transparent background.
-    Returns the surface and its original (pre-scrolling) width.
+    Renders text onto a new Pillow Image surface, typically with a transparent background.
+    The surface width can be fixed (e.g., for non-scrolling text aligned within a zone) 
+    or determined by text content (e.g., for scrolling text).
+
+    Args:
+        text_content (str): The text to render.
+        font_size_str (str): Symbolic font size ("small", "medium", "large", "xlarge").
+        text_color_hex (str): Hex string for text color (e.g., "#FFFFFF").
+        text_bg_color_hex (str, optional): Hex string for background color. Defaults to None (transparent).
+        text_align_surface_width (int, optional): If provided, fixes the surface width for text alignment.
+                                                Used for non-scrolling text that needs to align within a zone.
+                                                If None, surface width fits the text content (for scrolling).
+        text_padding (int): Padding around the text within its surface.
+
+    Returns:
+        tuple(Image.Image, int): A tuple containing the rendered Pillow Image object (RGBA) 
+                                 and the original width of the text content itself (before padding).
+                                 Returns (None, 0) if rendering fails.
     """
-    font_size_mapping = {"small": 24, "medium": 36, "large": 48, "xlarge": 60}
+    font_size_mapping = {"small": 24, "medium": 36, "large": 48, "xlarge": 60} # XL added
     pixel_size = font_size_mapping.get(font_size_str.lower(), 36) # Default to medium
     
     font = get_font(pixel_size)
@@ -189,25 +219,42 @@ def get_cached_text_surface(text_params, screen_width_for_text_area, force_refre
     
     # Use screen_width_for_text_area if text is not scrolling or if it's shorter than this width
     # This helps in creating surfaces that fit the intended display line for non-scrolling text.
-    # For scrolling text, if it's very long, its own width will be used.
-    render_width_param = screen_width_for_text_area if not is_scrolling else None
-
-
-    cache_key_parts = [current_text, font_size, color, bg_color]
-    # Only include render_width_param in key if it's used for rendering (i.e. non-scrolling or short scrolling)
-    if render_width_param: 
-        cache_key_parts.append(render_width_param)
+    # For scrolling text, if it's very long, its own width will be used by render_text_to_surface.
+    # text_align_surface_width is passed to render_text_to_surface as text_align_surface_width.
+    
+    cache_key_parts = [current_text, font_size, color, bg_color, screen_width_for_text_area, text_params.get('padding', 5)]
+    # If it's for scrolling, the screen_width_for_text_area is not used for rendering width, so differentiate cache key
+    # The render_width_param was simplified. Let's use text_align_surface_width directly in render_text_to_surface
+    # and make cache key depend on whether it was used.
+    # If text_align_surface_width is passed to render_text_to_surface, it means fixed width rendering.
+    # If it's None, it means auto-width for scrolling.
+    # The `is_scrolling` flag helps determine this.
+    
+    # Revised cache key logic:
+    # The actual rendered surface depends on text_align_surface_width if provided to render_text_to_surface.
+    # If is_scrolling is True, text_align_surface_width is typically None for render_text_to_surface,
+    # letting text width define surface width.
+    # If is_scrolling is False, text_align_surface_width (e.g. screen_width) is passed to render_text_to_surface
+    # to ensure static text is rendered in a surface of that fixed width for alignment.
+    
+    effective_render_width = screen_width_for_text_area if not is_scrolling else None
+    cache_key_parts = [current_text, font_size, color, bg_color, effective_render_width, text_params.get('padding', 5)]
     cache_key = tuple(cache_key_parts)
 
-
     if not force_refresh and cache_key in text_cache:
-        logging.debug(f"Returning cached text surface for: {current_text[:30]}...")
+        logging.debug(f"Returning cached text surface for: {current_text[:30]}... with key {cache_key}")
         return text_cache[cache_key]
 
     # Render the text
+    # If scrolling, render_width_param (text_align_surface_width for render_text_to_surface) should be None
+    # so the surface is sized to the text.
+    # If not scrolling, it should be screen_width_for_text_area.
     text_surface, original_text_width = render_text_to_surface(
-        current_text, font_size, color, bg_color, 
-        screen_width_for_scrolling=render_width_param,
+        current_text, 
+        font_size, 
+        color, 
+        bg_color, 
+        text_align_surface_width=effective_render_width, # Pass the width for fixed-size surface if not scrolling
         text_padding=text_params.get('padding', 5)
     )
 
@@ -316,7 +363,19 @@ def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
 
 def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width, screen_height):
     """
-    Fetches image attachment, scales/centers it. Then processes and applies text overlays.
+    Fetches image attachment, scales/centers it. 
+    Then, processes and applies defined text overlays (both static and prepares for scrolling).
+    
+    Args:
+        slide_doc (dict): The slide definition dictionary.
+        couchdb_url (str): Base URL for CouchDB.
+        tv_uuid (str): The UUID of the TV document (used as part of the attachment URL).
+        screen_width (int): Width of the target display screen.
+        screen_height (int): Height of the target display screen.
+
+    Returns:
+        dict: The updated slide_doc with 'processed_image' (Pillow Image with static text) 
+              and 'scrolling_texts' (list of surfaces for scrolling text), or None if processing fails.
     """
     content_name = slide_doc.get('content_name')
     slide_name = slide_doc.get('name', 'Unnamed Image Slide')
@@ -472,44 +531,62 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
     
     return None
 
-def perform_fade_transition(fb_path, screen_width, screen_height, bpp, outgoing_image_canvas, incoming_image_canvas, duration_ms):
+def perform_fade_transition(fb_path, screen_width, screen_height, bpp, img_mode, outgoing_image_canvas, incoming_image_canvas, duration_ms):
     """
-    Performs a fade transition between two Pillow Image canvases.
+    Performs a fade transition between two Pillow Image canvases by blending them
+    incrementally and writing each step to the framebuffer.
+
+    Args:
+        fb_path (str): Path to the framebuffer device (used by write_to_framebuffer placeholder).
+        screen_width (int): Width of the screen.
+        screen_height (int): Height of the screen.
+        bpp (int): Bits per pixel of the screen (used by write_to_framebuffer placeholder).
+        img_mode (str): Pillow image mode for framebuffer (e.g. 'RGB', 'RGBA').
+        outgoing_image_canvas (Image.Image, optional): The image currently displayed, fading out.
+        incoming_image_canvas (Image.Image): The new image to fade in.
+        duration_ms (int): Total duration of the fade transition in milliseconds.
     """
+    # Note: fb_obj from fb_info is not used here as write_to_framebuffer is a placeholder.
+    # A real implementation might pass fb_info['fb_obj'].
     logging.info(f"Performing fade transition: duration {duration_ms}ms, from {'image' if outgoing_image_canvas else 'None'} to {'image' if incoming_image_canvas else 'None'}")
 
     if incoming_image_canvas is None:
         logging.warning("Fade transition requested but incoming_image_canvas is None. Nothing to display.")
-        # If outgoing_image_canvas exists, it will just stay on screen. If not, screen might be blank.
         return
 
     if duration_ms <= 0:
         logging.info("Transition duration is 0 or less, displaying incoming image directly.")
-        write_to_framebuffer(fb_path, incoming_image_canvas, screen_width, screen_height, bpp)
+        write_to_framebuffer(None, incoming_image_canvas, screen_width, screen_height, bpp, img_mode) # Pass None for fb_obj for placeholder
         return
 
     black_canvas = Image.new('RGB', (screen_width, screen_height), (0, 0, 0))
-    delay_per_step = (duration_ms / FADE_STEPS) / 1000.0 # Convert ms to seconds for time.sleep
+    # Ensure canvases are in 'RGB' mode for Image.blend, if not already.
+    # (This should be guaranteed by how they are created/processed before this function)
+    if outgoing_image_canvas and outgoing_image_canvas.mode != 'RGB':
+        outgoing_image_canvas = outgoing_image_canvas.convert('RGB')
+    if incoming_image_canvas.mode != 'RGB':
+        incoming_image_canvas = incoming_image_canvas.convert('RGB')
+
+
+    delay_per_step = (duration_ms / FADE_STEPS) / 1000.0 
 
     # Fade Out Logic
     if outgoing_image_canvas:
         logging.debug("Fade Out phase...")
         for i in range(FADE_STEPS + 1):
-            alpha = i / FADE_STEPS
+            alpha = i / FADE_STEPS 
             try:
                 blended_image = Image.blend(outgoing_image_canvas, black_canvas, alpha)
-                write_to_framebuffer(fb_path, blended_image, screen_width, screen_height, bpp)
-            except ValueError as e: # Can happen if images are not same mode/size, though they should be screen_width/height RGB
-                logging.error(f"Error blending images during fade out: {e}. Using black_canvas.")
-                write_to_framebuffer(fb_path, black_canvas, screen_width, screen_height, bpp)
-            time.sleep(delay_per_step)
+                write_to_framebuffer(None, blended_image, screen_width, screen_height, bpp, img_mode)
+            except ValueError as e: 
+                logging.error(f"Error blending images during fade out (slide: {slide_name if 'slide_name' in locals() else 'N/A'}): {e}. Using black_canvas.", exc_info=True)
+                write_to_framebuffer(None, black_canvas, screen_width, screen_height, bpp, img_mode)
+                break # Skip to fade in if blending fails
+            if i < FADE_STEPS: time.sleep(delay_per_step) # No sleep on the very last step of fade out
     else:
-        # If no outgoing image, we can consider the "fade out" as already done (screen is black)
-        # or briefly show black before fading in the new one.
-        # For simplicity, if no outgoing, we just write black once if fade-out would have occurred.
         logging.debug("No outgoing image, ensuring screen is black before fade in.")
-        write_to_framebuffer(fb_path, black_canvas, screen_width, screen_height, bpp)
-        # A small pause might be good here if there was no fade-out, but duration_ms should cover it.
+        write_to_framebuffer(None, black_canvas, screen_width, screen_height, bpp, img_mode)
+        # A small, fixed pause could be added here if desired, but the fade-in loop will provide gradual change.
 
     # Fade In Logic
     logging.debug("Fade In phase...")
@@ -517,16 +594,14 @@ def perform_fade_transition(fb_path, screen_width, screen_height, bpp, outgoing_
         alpha = i / FADE_STEPS
         try:
             blended_image = Image.blend(black_canvas, incoming_image_canvas, alpha)
-            write_to_framebuffer(fb_path, blended_image, screen_width, screen_height, bpp)
+            write_to_framebuffer(None, blended_image, screen_width, screen_height, bpp, img_mode)
         except ValueError as e:
-            logging.error(f"Error blending images during fade in: {e}. Using incoming_image_canvas directly.")
-            write_to_framebuffer(fb_path, incoming_image_canvas, screen_width, screen_height, bpp) # Show final to recover
-            break # Exit loop if blending fails
-        time.sleep(delay_per_step)
+            logging.error(f"Error blending images during fade in (slide: {slide_name if 'slide_name' in locals() else 'N/A'}): {e}. Using incoming_image_canvas directly.", exc_info=True)
+            write_to_framebuffer(None, incoming_image_canvas, screen_width, screen_height, bpp, img_mode) 
+            break 
+        if i < FADE_STEPS: time.sleep(delay_per_step) # No sleep on the very last step of fade in
 
-    # Ensure the final frame is exactly the incoming_image_canvas
-    logging.debug("Ensuring final frame is purely the incoming image.")
-    write_to_framebuffer(fb_path, incoming_image_canvas, screen_width, screen_height, bpp)
+    # Final display of the incoming_image_canvas is implicitly handled by the loop's last step.
     logging.info("Fade transition complete.")
 
 
@@ -550,7 +625,8 @@ def cv2_to_pillow(cv2_frame):
 
 def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused):
     """
-    Fetches video attachment, stores it in a temp file, and extracts video properties.
+    Fetches video attachment, stores it in a temp file, extracts video properties,
+    and prepares text overlay surfaces for the video.
     """
     slide_name = slide_doc.get('name', 'Unnamed Video Slide')
     content_name = slide_doc.get('content_name')
@@ -596,13 +672,54 @@ def fetch_and_prepare_video_slide(slide_doc, couchdb_url, tv_uuid, config_unused
            slide_doc['video_width'] == 0 or slide_doc['video_height'] == 0:
              logging.warning(f"Video '{content_name}' has invalid metadata (fps/width/height is 0 or None). May not play correctly.")
         
-        slide_doc['content_type'] = 'video' 
-        # Define cleanup function using default argument to capture current temp_file_path
+        slide_doc['content_type'] = 'video'
+        
+        # Prepare text overlays for video (static and scrolling)
+        slide_doc['static_text_surfaces'] = [] # To store {surface, params} for static text
+        slide_doc['scrolling_texts'] = []      # To store {surface, original_width, params} for scrolling
+
+        text_overlays_def = slide_doc.get('text_overlays', [])
+        if not isinstance(text_overlays_def, list): text_overlays_def = []
+
+        # Screen width is needed for get_cached_text_surface if text is not scrolling
+        # This is a bit problematic as fetch_and_prepare_video_slide doesn't know screen_width.
+        # For now, we'll assume text for video will mostly be scrolling or use its own width.
+        # A better solution would be to pass screen_width here or make text rendering more flexible.
+        # Let's assume for video, non-scrolling text surfaces are rendered to their own width.
+        # This means text_align_surface_width will be None for get_cached_text_surface.
+        
+        for text_params in text_overlays_def:
+            text_content = text_params.get('text')
+            if not text_content:
+                logging.warning(f"Video slide '{slide_name}' has text_overlay without 'text'. Skipping this overlay.")
+                continue
+            
+            # For video, pass None for screen_width_for_text_area to render text to its own width initially.
+            # Alignment will be handled during per-frame composition.
+            text_render_surface, text_original_width = get_cached_text_surface(text_params, None)
+
+            if not text_render_surface:
+                logging.warning(f"Could not render text: '{text_content[:30]}...' for video slide '{slide_name}'.")
+                continue
+
+            if text_params.get('scroll', False):
+                slide_doc['scrolling_texts'].append({
+                    'surface': text_render_surface,
+                    'original_width': text_original_width,
+                    'params': text_params
+                })
+            else: # Static text for video
+                slide_doc['static_text_surfaces'].append({
+                    'surface': text_render_surface,
+                    'params': text_params 
+                })
+        
+        logging.info(f"Successfully prepared video slide '{slide_name}' from '{content_name}' with text overlays.")
+        
         slide_doc['cleanup_func'] = lambda path=temp_file_path_actual: (
             logging.info(f"Cleaning up temporary video file: {path}"),
             os.unlink(path) if os.path.exists(path) else None
         )
-        logging.info(f"Successfully prepared video slide '{slide_name}' from '{content_name}'.")
         return slide_doc
 
     except requests.exceptions.HTTPError as e:
@@ -995,17 +1112,19 @@ def get_framebuffer_info(fb_path):
     #    __u32 accel;            /* Type of acceleration available */
     #    __u16 reserved[3];      /* Reserved for future use  */
     # };
-    # For now, continue returning mock data but structure it for potential future use.
-    # If fb_obj were real, it should be opened here (or earlier) and closed on application exit (e.g. atexit).
+    # In a real implementation, this function would use fcntl.ioctl with FBIOGET_VSCREENINFO
+    # and FBIOGET_FSCREENINFO to get actual screen properties. It might also open the
+    # framebuffer device (e.g., os.open(fb_path, os.O_RDWR)) and potentially mmap it.
+    # The file object or mmap object would then be stored in fb_info['fb_obj'].
+    # This fb_obj would be closed on application exit (e.g., using atexit).
     fb_info = {
         'width': 1920,
         'height': 1080,
         'bpp': 32,
-        'fb_obj': None, # Placeholder for actual framebuffer file object or mmap object.
-        'img_mode': 'RGB' # Default Pillow mode to convert to for framebuffer.
-        # Add other necessary fields like 'line_length' if real ioctl is used.
+        'fb_obj': None, 
+        'img_mode': 'RGB' 
     }
-    # Determine img_mode based on bpp, this is a simplification:
+    # Example pixel format determination based on bpp (highly simplified):
     if fb_info['bpp'] == 32:
         fb_info['img_mode'] = 'RGBA' # Or 'RGB' if alpha is not used/supported by fb
     elif fb_info['bpp'] == 24:
@@ -1025,14 +1144,22 @@ def write_to_framebuffer(fb_obj_unused, image_data, screen_width, screen_height,
     """
     # In a real implementation:
     # 1. Convert image_data (Pillow Image) to raw bytes in the correct pixel format
-    #    (e.g., RGBA, BGRA, RGB565) based on framebuffer info.
-    #    raw_bytes = image_data.convert(img_mode_from_fb_info).tobytes()
-    #    If specific byte order or padding is needed (e.g. from line_length), handle here.
-    # 2. Write/blit raw_bytes to fb_obj.
-    #    If using os.write: os.lseek(fb_obj, 0, os.SEEK_SET); os.write(fb_obj, raw_bytes)
-    #    If using mmap: fb_obj.seek(0); fb_obj.write(raw_bytes)
+    #    (e.g., RGBA, BGRA, RGB565) based on actual framebuffer properties (fb_var_screeninfo).
+    #    The `img_mode_unused` would be replaced by `fb_info['actual_pixel_format_for_pillow']`.
+    #    E.g., if fb needs BGRA:
+    #      image_data_converted = image_data.convert('RGBA') # Ensure it has alpha if needed
+    #      r, g, b, a = image_data_converted.split()
+    #      final_image_data = Image.merge("RGBA", (b, g, r, a)) # Swap R and B
+    #      raw_bytes = final_image_data.tobytes()
+    #    Or for RGB565:
+    #      raw_bytes = image_data.convert('RGB').tobytes('raw', 'RGB;16')
+    # 2. Ensure `raw_bytes` matches the expected `line_length` (stride) from `fb_fix_screeninfo`.
+    #    This might involve padding each line if Pillow's output stride differs.
+    # 3. Write/blit `raw_bytes` to `fb_obj_real` (the opened framebuffer device or mmap object).
+    #    - Using `os.write(fb_obj_real_fd, raw_bytes)` after `os.lseek(fb_obj_real_fd, 0, os.SEEK_SET)`.
+    #    - Or `mmap_obj.seek(0); mmap_obj.write(raw_bytes)`.
 
-    # Placeholder logging:
+    # Current placeholder logging:
     img_byte_size = 0
     if image_data:
         try:
@@ -1048,50 +1175,84 @@ def write_to_framebuffer(fb_obj_unused, image_data, screen_width, screen_height,
 def apply_text_and_scroll(base_canvas, slide_text_overlays, scroll_positions, screen_width, delta_time):
     """
     Applies static and scrolling text overlays to a copy of the base_canvas.
-    Returns the new canvas with text applied.
-    Updates scroll_positions dictionary in place.
+    For video, `base_canvas` is a single frame.
+    Static text definitions are also passed and applied if not pre-rendered.
+
+    Args:
+        base_canvas (Image.Image): The base image to draw upon.
+        slide_text_definitions (list): List of text definitions from the slide 
+                                     (e.g., from 'scrolling_texts' or 'static_text_surfaces').
+                                     Each item is a dict like {'surface': Image, 'params': dict, 'original_width': int}.
+                                     For static text on video, 'original_width' might not be present.
+        scroll_positions (dict): A dictionary mapping `idx` (from `slide_text_definitions`) to current X scroll position.
+                                 This is updated in-place for scrolling text.
+        screen_width (int): Width of the target screen.
+        screen_height (int): Height of the target screen.
+        delta_time (float): Time elapsed since the last frame, for scroll speed calculation.
+        is_video_frame (bool): If True, implies static text also needs to be rendered from definitions.
+
+    Returns:
+        Image.Image: The new canvas with all text applied.
     """
     canvas_with_text = base_canvas.copy()
-    # Ensure canvas is RGBA for alpha_composite, convert back to RGB at the very end if needed.
-    if canvas_with_text.mode != 'RGBA':
+    if canvas_with_text.mode != 'RGBA': # Ensure RGBA for alpha compositing
         canvas_with_text = canvas_with_text.convert('RGBA')
 
-    # Static text is assumed to be pre-rendered on base_canvas for image/website slides.
-    # For video, static text might need to be applied here if not pre-rendered per frame.
-    # This function primarily focuses on scrolling text for now.
-
-    scrolling_text_defs = [t for t in slide_text_overlays if t.get('params', {}).get('scroll', False)]
-
-    for idx, text_info in enumerate(scrolling_text_defs):
+    for idx, text_info in enumerate(slide_text_definitions):
         text_surface = text_info['surface']
-        original_text_width = text_info['original_width']
         params = text_info['params']
         
         if text_surface is None:
+            logging.warning(f"Text surface is None for overlay idx {idx}. Skipping.")
             continue
 
-        # Calculate new scroll position
-        scroll_positions[idx] -= SCROLL_SPEED_PPS * delta_time
-        current_x = int(scroll_positions[idx])
+        is_scrolling_text = params.get('scroll', False)
         
-        # Reset if scrolled off screen
-        if current_x + original_text_width < 0:
-            scroll_positions[idx] = screen_width
-            current_x = screen_width
+        if is_scrolling_text:
+            original_text_width = text_info.get('original_width', text_surface.width) # Fallback to surface width
+            # Calculate new scroll position for scrolling text
+            if idx not in scroll_positions: # Initialize if not present
+                 scroll_positions[idx] = screen_width
+            
+            scroll_positions[idx] -= SCROLL_SPEED_PPS * delta_time
+            current_x = int(scroll_positions[idx])
+            
+            if current_x + original_text_width < 0: # Reset if scrolled off screen
+                scroll_positions[idx] = screen_width
+                current_x = screen_width
+            
+            # Default Y position for scrolling text (e.g., bottom of screen)
+            default_y = screen_height - text_surface.height - params.get('margin', 10) 
+            text_y_position = params.get('y_position', default_y)
+            if isinstance(text_y_position, str): # e.g. "90%"
+                try: text_y_position = int(screen_height * (int(text_y_position.rstrip('%')) / 100.0) - text_surface.height / 2)
+                except ValueError: text_y_position = default_y
         
-        text_y_position = params.get('y_position', screen_height - text_surface.height - params.get('margin', 10)) # Default bottom
-        if isinstance(text_y_position, str): # e.g. "50%"
-            try: text_y_position = int(screen_height * (int(text_y_position.rstrip('%')) / 100.0))
-            except ValueError: text_y_position = screen_height - text_surface.height - params.get('margin', 10)
+        elif is_video_frame: # Static text being applied to a video frame
+            # Determine position for static text (similar to fetch_and_process_image_slide)
+            text_align = params.get('align', 'bottom_center')
+            margin = params.get('margin', 10)
+            surf_width, surf_height = text_surface.size
+            if text_align == 'top_left': current_x, text_y_position = margin, margin
+            elif text_align == 'top_center': current_x, text_y_position = (screen_width - surf_width) // 2, margin
+            elif text_align == 'top_right': current_x, text_y_position = screen_width - surf_width - margin, margin
+            elif text_align == 'center_left': current_x, text_y_position = margin, (screen_height - surf_height) // 2
+            elif text_align == 'center': current_x, text_y_position = (screen_width - surf_width) // 2, (screen_height - surf_height) // 2
+            elif text_align == 'center_right': current_x, text_y_position = screen_width - surf_width - margin, (screen_height - surf_height) // 2
+            elif text_align == 'bottom_left': current_x, text_y_position = margin, screen_height - surf_height - margin
+            elif text_align == 'bottom_center': current_x, text_y_position = (screen_width - surf_width) // 2, screen_height - surf_height - margin
+            elif text_align == 'bottom_right': current_x, text_y_position = screen_width - surf_width - margin, screen_height - surf_height - margin
+            else: # Default if align is unknown
+                current_x, text_y_position = (screen_width - surf_width) // 2, screen_height - surf_height - margin
+        else: # Static text already on base_canvas for image/website, skip here
+            continue 
 
-
-        # Composite the scrolling text
-        # Use a temporary layer for each text to handle alpha correctly
+        # Composite the text
         temp_text_layer = Image.new('RGBA', canvas_with_text.size, (0,0,0,0))
         temp_text_layer.paste(text_surface, (current_x, text_y_position))
         canvas_with_text = Image.alpha_composite(canvas_with_text, temp_text_layer)
 
-    return canvas_with_text.convert('RGB') # Convert back to RGB for framebuffer
+    return canvas_with_text.convert('RGB')
 
 
 def main():
@@ -1202,126 +1363,122 @@ def main():
                 # Apply text and scroll for the first frame before writing if it's not a video slide
                 # Video slides handle text per frame.
                 if slide_type != 'video':
-                    # For static/website, 'processed_image' has static text. Scrolling text needs to be applied.
-                    # Initialize scroll positions for the current slide if not already done
+                    # For static/website, 'processed_image' has static text.
+                    # Scrolling text needs to be applied frame by frame.
+                    # Initialize scroll positions for the current slide if not already done.
                     if current_slide_index not in slide_scroll_positions:
-                        slide_scroll_positions[current_slide_index] = {
+                         slide_scroll_positions[current_slide_index] = {
                             idx: screen_width for idx, _ in enumerate(slide.get('scrolling_texts', []))
-                        }
+                        }                       
                     
+                    # Apply text and scroll for the first frame. Delta_time is 0 for the initial frame.
                     final_display_image = apply_text_and_scroll(
                         incoming_canvas_for_transition, 
-                        slide.get('scrolling_texts', []), 
+                        slide.get('scrolling_texts', []), # Pass scrolling text definitions
                         slide_scroll_positions[current_slide_index], 
-                        screen_width, 
-                        0 # delta_time is 0 for initial frame
+                        screen_width, screen_height, # Pass screen_height
+                        0 
                     )
                     write_to_framebuffer(fb_info.get('fb_obj'), final_display_image, screen_width, screen_height, bpp, img_mode)
-                    outgoing_slide_canvas = final_display_image.copy() # Save for next transition
-                else: # Video slide, just write the prepared canvas (likely black or first frame after modification)
+                    outgoing_slide_canvas = final_display_image.copy() 
+                else: # Video slide, initial canvas (likely black) is written.
                     write_to_framebuffer(fb_info.get('fb_obj'), incoming_canvas_for_transition, screen_width, screen_height, bpp, img_mode)
                     outgoing_slide_canvas = incoming_canvas_for_transition.copy()
 
 
-            # Main display phase for the slide (handling animations like video/scrolling text)
+            # Main display phase for the slide
             slide_start_time = time.time()
-            frame_target_duration = 1.0 / SCROLL_FPS # For scrolling text animations
+            frame_target_duration = 1.0 / SCROLL_FPS 
 
             if slide_type == 'video':
                 video_path = slide.get('video_temp_path')
-                video_fps = slide.get('video_fps', SCROLL_FPS)
+                video_fps = slide.get('video_fps', SCROLL_FPS) # Use video's FPS if available
                 video_frame_duration = 1.0 / video_fps if video_fps > 0 else frame_target_duration
                 
                 if video_path and os.path.exists(video_path):
-                    video_cap = cv2.VideoCapture(video_path)
-                    if not video_cap.isOpened():
-                        logging.error(f"Could not open video {video_path} for slide '{slide_name}'.")
-                        outgoing_slide_canvas = Image.new('RGB', (screen_width, screen_height), "red") # Error indication
-                        write_to_framebuffer(fb_info.get('fb_obj'), outgoing_slide_canvas, screen_width, screen_height, bpp, img_mode)
-                        time.sleep(slide_duration_s) # Show error for slide duration
-                    else:
-                        # Initialize scroll positions for video slide's text overlays
-                        if current_slide_index not in slide_scroll_positions:
-                             slide_scroll_positions[current_slide_index] = {
-                                idx: screen_width for idx, _ in enumerate(slide.get('text_overlays', [])) # Video uses text_overlays directly for scrolling
-                            }
-
-                        while (time.time() - slide_start_time) < slide_duration_s:
-                            loop_frame_start_time = time.time()
-                            ret, frame = video_cap.read()
-                            if not ret:
-                                video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Loop video
-                                ret, frame = video_cap.read()
-                                if not ret: break # Break if loop also fails
-
-                            if frame is not None:
-                                pillow_frame = cv2_to_pillow(frame)
-                                if pillow_frame:
-                                    # Scale and center video frame
-                                    video_w, video_h = pillow_frame.size
-                                    aspect_ratio = video_w / video_h
-                                    if screen_width / screen_height > aspect_ratio: # Screen is wider
-                                        new_h = screen_height
-                                        new_w = int(aspect_ratio * new_h)
-                                    else: # Screen is taller or same aspect
-                                        new_w = screen_width
-                                        new_h = int(new_w / aspect_ratio)
-                                    
-                                    scaled_video_frame = pillow_frame.resize((new_w, new_h), Image.LANCZOS)
-                                    current_display_canvas = Image.new('RGB', (screen_width, screen_height), (0,0,0))
-                                    current_display_canvas.paste(scaled_video_frame, ((screen_width - new_w)//2, (screen_height - new_h)//2))
-                                    
-                                    # Apply text (static & scrolling) to video frame
-                                    # Video slides store all text in 'text_overlays', scrolling ones have 'scroll:true'
-                                    # Static text is applied by get_cached_text_surface and composited by apply_text_and_scroll
-                                    # This means fetch_and_process_video_slide should prepare 'scrolling_texts' like other types if we want to use apply_text_and_scroll
-                                    # For now, let's assume text_overlays are processed by apply_text_and_scroll
-                                    # This requires text_overlays to be structured like 'scrolling_texts' items or adapt apply_text_and_scroll
-                                    # Re-simplifying: assume video text overlays are defined in 'scrolling_texts' or 'static_texts' in slide_doc
-                                    
-                                    # Simplified: use `slide.get('text_overlays', [])` and let `apply_text_and_scroll` handle them
-                                    # This assumes text_overlays on video are defined similar to scrolling_texts items
-                                    # (i.e. pre-rendered surfaces are available or defined to be static/scrolling)
-                                    # This part needs careful data structure design from CouchDB.
-                                    # For now, let's assume 'text_overlays' are like 'scrolling_texts' for simplicity here.
-                                    
-                                    # Create a list of text_info dicts for apply_text_and_scroll
-                                    # This is a bit of a hack due to differing text structures.
-                                    # Ideally, video text would also be pre-processed into 'scrolling_texts' and 'static_texts' (on processed_image)
-                                    video_text_definitions = []
-                                    for text_param_set in slide.get('text_overlays', []):
-                                        # We need to get the pre-rendered surface. This is currently done elsewhere.
-                                        # This highlights a structural issue: text rendering should be consistently available.
-                                        # For now, this part will be less effective for video text.
-                                        # Let's assume static text for video is not pre-rendered on a base_image.
-                                        # And scrolling text needs its surface.
-                                        # This part of the logic is getting very complex due to trying to retrofit.
-                                        # A better way: video frames are base, text is applied.
-                                        # For now, let's assume `apply_text_and_scroll` can take raw text_params and render if needed.
-                                        # This is too much for this function.
-                                        # Simplified: video applies its own text overlays if defined.
-                                        # This will be less featureful than image/web for now for text on video.
-                                        pass # Placeholder for more robust video text overlay
-
-
-                                    final_frame_for_fb = current_display_canvas # Potentially with text
-                                    write_to_framebuffer(fb_info.get('fb_obj'), final_frame_for_fb, screen_width, screen_height, bpp, img_mode)
-                                    outgoing_slide_canvas = final_frame_for_fb.copy()
+                    video_cap = None
+                    try:
+                        video_cap = cv2.VideoCapture(video_path)
+                        if not video_cap.isOpened():
+                            logging.error(f"Could not open video {video_path} for slide '{slide_name}'. Displaying error.")
+                            error_img = Image.new('RGB', (screen_width, screen_height), "red")
+                            ImageDraw.Draw(error_img).text((10,10), f"Error: Video {slide_name} not found.", fill="white")
+                            write_to_framebuffer(fb_info.get('fb_obj'), error_img, screen_width, screen_height, bpp, img_mode)
+                            outgoing_slide_canvas = error_img.copy()
+                            time.sleep(slide_duration_s) # Show error for slide duration
+                        else:
+                            # Initialize scroll positions for this video slide's text overlays
+                            if current_slide_index not in slide_scroll_positions:
+                                slide_scroll_positions[current_slide_index] = {
+                                    idx: screen_width for idx, _ in enumerate(slide.get('static_text_surfaces', []) + slide.get('scrolling_texts', []))
+                                }
                             
-                            elapsed_frame_time = time.time() - loop_frame_start_time
-                            time.sleep(max(0, video_frame_duration - elapsed_frame_time))
-                        video_cap.release()
-                else: # Video path missing or not found
+                            combined_text_defs = slide.get('static_text_surfaces', []) + slide.get('scrolling_texts', [])
+
+                            while (time.time() - slide_start_time) < slide_duration_s:
+                                loop_frame_start_time = time.time()
+                                ret, frame = video_cap.read()
+                                if not ret: # End of video
+                                    video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # Loop video
+                                    ret, frame = video_cap.read()
+                                    if not ret: 
+                                        logging.warning(f"Failed to loop video {slide_name}, or video is empty.")
+                                        break 
+
+                                if frame is not None:
+                                    pillow_frame = cv2_to_pillow(frame)
+                                    if pillow_frame:
+                                        # Scale and center video frame
+                                        video_w, video_h = pillow_frame.size
+                                        aspect_ratio = video_w / video_h if video_h > 0 else 1.0
+                                        
+                                        if screen_width / screen_height > aspect_ratio:
+                                            new_h = screen_height; new_w = int(aspect_ratio * new_h)
+                                        else:
+                                            new_w = screen_width; new_h = int(new_w / aspect_ratio) if aspect_ratio > 0 else screen_height
+                                        
+                                        scaled_video_frame = pillow_frame.resize((new_w, new_h), Image.LANCZOS)
+                                        frame_canvas = Image.new('RGB', (screen_width, screen_height), (0,0,0))
+                                        frame_canvas.paste(scaled_video_frame, ((screen_width - new_w)//2, (screen_height - new_h)//2))
+                                        
+                                        # Apply all text (static and scrolling) to the current video frame
+                                        final_frame_for_fb = apply_text_and_scroll(
+                                            frame_canvas, 
+                                            combined_text_defs, # Pass combined static and scrolling text defs
+                                            slide_scroll_positions[current_slide_index], 
+                                            screen_width, screen_height, # Pass screen_height
+                                            video_frame_duration # delta_time for this frame
+                                        )
+                                        write_to_framebuffer(fb_info.get('fb_obj'), final_frame_for_fb, screen_width, screen_height, bpp, img_mode)
+                                        outgoing_slide_canvas = final_frame_for_fb.copy()
+                                
+                                elapsed_frame_time = time.time() - loop_frame_start_time
+                                time.sleep(max(0, video_frame_duration - elapsed_frame_time))
+                    except Exception as e:
+                        logging.error(f"Error during video playback for slide '{slide_name}': {e}", exc_info=True)
+                        # Show an error image for the remainder of the slide duration
+                        error_img = Image.new('RGB', (screen_width, screen_height), "darkred")
+                        ImageDraw.Draw(error_img).text((10,10), f"Playback Error: {slide_name}", fill="white")
+                        write_to_framebuffer(fb_info.get('fb_obj'), error_img, screen_width, screen_height, bpp, img_mode)
+                        outgoing_slide_canvas = error_img.copy()
+                        remaining_time = slide_duration_s - (time.time() - slide_start_time)
+                        if remaining_time > 0: time.sleep(remaining_time)
+                    finally:
+                        if video_cap and video_cap.isOpened():
+                            video_cap.release()
+                else: 
                     logging.error(f"Video path missing or invalid for slide '{slide_name}'. Skipping video playback.")
-                    time.sleep(slide_duration_s) # Still wait for slide duration
-                    if outgoing_slide_canvas is None: # If there was no previous canvas (e.g. error on first slide)
-                        outgoing_slide_canvas = Image.new('RGB', (screen_width, screen_height), "black") # Prepare a black canvas
-                    # No change to outgoing_slide_canvas, it remains the last successfully displayed frame.
+                    placeholder_img = Image.new('RGB', (screen_width, screen_height), "grey")
+                    ImageDraw.Draw(placeholder_img).text((10,10), f"Video Error: {slide_name}", fill="black")
+                    write_to_framebuffer(fb_info.get('fb_obj'), placeholder_img, screen_width, screen_height, bpp, img_mode)
+                    outgoing_slide_canvas = placeholder_img.copy()
+                    time.sleep(slide_duration_s)
 
-            elif slide.get('processed_image'): # Image or Website slide
-                base_image = slide['processed_image'] # This has static text pre-applied
 
-                if current_slide_index not in slide_scroll_positions:
+            elif slide.get('processed_image'): # Image or Website slide (already has static text)
+                base_image = slide['processed_image'] 
+
+                if current_slide_index not in slide_scroll_positions: # Initialize if needed
                     slide_scroll_positions[current_slide_index] = {
                          idx: screen_width for idx, _ in enumerate(slide.get('scrolling_texts', []))
                     }
@@ -1332,10 +1489,10 @@ def main():
                         
                         current_display_canvas = apply_text_and_scroll(
                             base_image, 
-                            slide.get('scrolling_texts', []), 
+                            slide.get('scrolling_texts', []), # Only pass scrolling texts here
                             slide_scroll_positions[current_slide_index], 
-                            screen_width, 
-                            frame_target_duration # Use fixed frame_target_duration for scroll animation step
+                            screen_width, screen_height, # Pass screen_height
+                            frame_target_duration 
                         )
                         write_to_framebuffer(fb_info.get('fb_obj'), current_display_canvas, screen_width, screen_height, bpp, img_mode)
                         outgoing_slide_canvas = current_display_canvas.copy()
@@ -1343,14 +1500,15 @@ def main():
                         elapsed_frame_time = time.time() - loop_frame_start_time
                         time.sleep(max(0, frame_target_duration - elapsed_frame_time))
                 else: # Static image/website with no scrolling text
-                    # Already displayed by transition or initial write.
-                    # Ensure outgoing_slide_canvas is set correctly.
                     outgoing_slide_canvas = base_image.copy() 
-                    time.sleep(slide_duration_s)
+                    # Image was already displayed by transition or initial write_to_framebuffer call
+                    # So just sleep for the remaining duration
+                    remaining_duration = slide_duration_s - (time.time() - slide_start_time)
+                    if remaining_duration > 0: time.sleep(remaining_duration)
             
-            else: # Fallback for unknown type or missing content
-                logging.warning(f"Slide '{slide_name}' (Type: {slide_type}) has no displayable content. Showing placeholder for duration.")
-                placeholder_img = Image.new('RGB', (screen_width, screen_height), (20,20,20)) # Dark grey
+            else: # Fallback for unknown type or if processed_image is missing
+                logging.warning(f"Slide '{slide_name}' (Type: {slide_type}) has no displayable content. Showing error placeholder.")
+                placeholder_img = Image.new('RGB', (screen_width, screen_height), (20,20,20)) 
                 draw = ImageDraw.Draw(placeholder_img)
                 draw.text((10,10), f"Error: Slide '{slide_name}'\n (Type: {slide_type}) \nNo content.", fill="red")
                 write_to_framebuffer(fb_info.get('fb_obj'), placeholder_img, screen_width, screen_height, bpp, img_mode)
