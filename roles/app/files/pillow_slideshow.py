@@ -13,6 +13,8 @@ import hashlib
 import tempfile # Ensure tempfile is imported
 import cv2
 import numpy as np
+import io # For io.BytesIO
+# time is already imported globally
 from io import BytesIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -310,6 +312,66 @@ def fetch_document(couchdb_url, tv_uuid):
         logging.error(f"Error decoding JSON from document {doc_url}: {e}", exc_info=True)
     except Exception as e: # Catch any other unexpected errors
         logging.critical(f"Unexpected error in fetch_document for {doc_url}: {e}", exc_info=True)
+    return None
+
+def upload_attachment_to_couchdb(db_url, doc_id, doc_rev, attachment_name, attachment_data_bytes, content_type):
+    """
+    Uploads a data attachment to a CouchDB document.
+
+    Args:
+        db_url (str): The base URL of the CouchDB database (e.g., http://host/slideshows).
+        doc_id (str): The ID of the document.
+        doc_rev (str): The current revision of the document.
+        attachment_name (str): The name for the new attachment.
+        attachment_data_bytes (bytes): The binary data of the attachment.
+        content_type (str): The MIME type of the attachment (e.g., "image/png").
+
+    Returns:
+        str: The new document revision string if successful, None otherwise.
+    """
+    if not all([db_url, doc_id, doc_rev, attachment_name, attachment_data_bytes, content_type]):
+        logging.error("upload_attachment_to_couchdb: Missing one or more required arguments.")
+        return None
+
+    attachment_url = f"{db_url.rstrip('/')}/{doc_id}/{attachment_name}?rev={doc_rev}"
+    headers = {
+        "Content-Type": content_type
+    }
+
+    session = get_requests_session() # Use existing session getter for retries etc.
+    logging.info(f"Attempting to upload attachment '{attachment_name}' to {doc_id} at rev {doc_rev}")
+
+    try:
+        response = session.put(
+            attachment_url,
+            data=attachment_data_bytes,
+            headers=headers,
+            timeout=30 # Set a reasonable timeout for uploads
+        )
+        response.raise_for_status() # Raise HTTPError for bad responses (4XX or 5XX)
+
+        response_json = response.json()
+        if response_json.get("ok"):
+            new_rev = response_json.get("rev")
+            logging.info(f"Successfully uploaded attachment '{attachment_name}' to document '{doc_id}'. New revision: {new_rev}")
+            return new_rev
+        else:
+            logging.error(f"Failed to upload attachment '{attachment_name}'. Response: {response.text}")
+            return None
+
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"HTTP error uploading attachment {attachment_name}: {e.response.status_code} {e.response.reason} - {e.response.text}")
+    except requests.exceptions.ConnectionError as e:
+        logging.error(f"Connection error uploading attachment {attachment_name}: {e}")
+    except requests.exceptions.Timeout as e:
+        logging.error(f"Timeout uploading attachment {attachment_name}: {e}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Generic error uploading attachment {attachment_name}: {e}")
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON response after uploading {attachment_name}: {e}")
+    except Exception as e:
+        logging.critical(f"Unexpected error in upload_attachment_to_couchdb for {attachment_name}: {e}", exc_info=True)
+
     return None
 
 # def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
@@ -858,9 +920,9 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
                 logging.error(f"Error quitting WebDriver for {url}: {e}", exc_info=True)
 
 
-def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, config_unused):
+def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, couchdb_slideshows_db_url, tv_uuid):
     """
-    Fetches/captures a website screenshot, processes it, and applies text overlays.
+    Fetches/captures a website screenshot, processes it, applies text overlays, and uploads to CouchDB.
     Uses a cache for website screenshots.
     """
     slide_name = slide_doc.get('name', 'Unnamed Website Slide')
@@ -955,7 +1017,52 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, conf
         logging.error(f"Failed to capture and process website slide: {slide_name} ({url})")
         # Return the slide_doc without 'processed_image' to indicate failure for this slide
         # Or, if strict, return None, and let process_slides_from_doc filter it out
-        return None
+        # return None # Original return if all fails
+
+    # Upload the processed image to CouchDB as an attachment
+    if slide_doc.get('processed_image'):
+        try:
+            image_to_upload = slide_doc['processed_image']
+
+            # Convert Pillow Image to PNG bytes
+            png_buffer = io.BytesIO()
+            image_to_upload.save(png_buffer, format="PNG")
+            png_bytes = png_buffer.getvalue()
+            png_buffer.close()
+
+            # Generate a unique attachment name
+            base_name = slide_doc.get('name', 'website_capture')
+            attachment_name = f"{base_name}_{int(time.time())}.png"
+
+            logging.info(f"Preparing to upload captured website image as '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
+
+            # Fetch current document revision to allow upload
+            doc_for_rev = fetch_document(couchdb_slideshows_db_url, tv_uuid)
+
+            if doc_for_rev and doc_for_rev.get('_rev'):
+                current_rev = doc_for_rev.get('_rev')
+                logging.info(f"Fetched current doc revision '{current_rev}' for '{tv_uuid}' before attachment upload.")
+
+                new_rev_after_upload = upload_attachment_to_couchdb(
+                    couchdb_slideshows_db_url,
+                    tv_uuid,
+                    current_rev,
+                    attachment_name,
+                    png_bytes,
+                    "image/png"
+                )
+
+                if new_rev_after_upload:
+                    logging.info(f"Successfully uploaded website screenshot '{attachment_name}'. New doc rev: {new_rev_after_upload}.")
+                else:
+                    logging.error(f"Failed to upload website screenshot '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
+            else:
+                logging.error(f"Could not fetch document or revision for '{tv_uuid}' to upload attachment for slide '{slide_doc.get('name', 'N/A')}'.")
+
+        except Exception as e:
+            logging.error(f"Error during website screenshot to CouchDB attachment conversion or upload for slide '{slide_doc.get('name', 'N/A')}': {e}", exc_info=True)
+
+    return slide_doc # Return slide_doc whether upload succeeded or not, as image is still in cache/memory
 
 
 def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config):
@@ -993,7 +1100,7 @@ def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_heig
         elif slide_type == 'website':
             if screen_width and screen_height:
                 processed_slide_content = fetch_and_process_website_slide(
-                    slide_def, screen_width, screen_height, app_config 
+                    slide_def, screen_width, screen_height, couchdb_url, tv_uuid # Pass couchdb_url and tv_uuid directly
                 )
             else:
                 logging.warning(f"Skipping website slide '{slide_name}' due to missing screen dimensions.")
