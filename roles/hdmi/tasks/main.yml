@@ -22,27 +22,11 @@
     
   when: target_os == "ubuntu"
 
-- name: Check for config.txt location
-  stat:
-    path: "{{ item }}"
-  register: config_locations
-  loop:
-    - /boot/firmware/config.txt
-    - /boot/config.txt
-  when: target_os == "raspios"
-
-- name: Set boot config path
-  set_fact:
-    boot_config_path: "{{ item.item }}"
-  loop: "{{ config_locations.results }}"
-  when: 
-    - target_os == "raspios"
-    - item.stat.exists
-
 - name: Configure dual HDMI setup
   lineinfile:
-    path: "{{ boot_config_path }}"
+    path: "/boot/firmware/config.txt"
     line: '{{ item }}'
+    create: yes
   loop:
     - '# Dual HDMI Configuration'
     - '# HDMI0 (primary) - Console/SSH access'
@@ -59,33 +43,19 @@
     - '# Disable KMS overlays to get separate framebuffers'
     - '#dtoverlay=vc4-kms-v3d'
   notify: reboot
-  when: 
-    - target_os == "raspios"
-    - boot_config_path is defined
-
-- name: Check for cmdline.txt location
-  stat:
-    path: "{{ item }}"
-  register: cmdline_locations
-  loop:
-    - /boot/firmware/cmdline.txt
-    - /boot/cmdline.txt
   when: target_os == "raspios"
 
-- name: Set boot cmdline path
-  set_fact:
-    boot_cmdline_path: "{{ item.item }}"
-  loop: "{{ cmdline_locations.results }}"
-  when: 
-    - target_os == "raspios"
-    - item.stat.exists
+- name: Ensure cmdline.txt exists for raspios
+  ansible.builtin.file:
+    path: /boot/firmware/cmdline.txt
+    state: touch
+    mode: '0644'
+  when: target_os == "raspios"
 
 - name: Add consoleblank=0 to cmdline.txt
   shell: |
-    if ! grep -q "consoleblank=0" {{ boot_cmdline_path }}; then
-      sed -i 's/$/ consoleblank=0/' {{ boot_cmdline_path }}
+    if ! grep -q "consoleblank=0" /boot/firmware/cmdline.txt; then
+      sed -i 's/$/ consoleblank=0/' /boot/firmware/cmdline.txt
     fi
   notify: reboot
-  when: 
-    - target_os == "raspios"
-    - boot_cmdline_path is defined
+  when: target_os == "raspios"

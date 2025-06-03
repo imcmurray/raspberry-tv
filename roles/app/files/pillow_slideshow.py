@@ -847,12 +847,7 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
         logging.error(f"Pillow error processing website screenshot for {url}: {e}", exc_info=True)
     except Exception as e: # Catch any other unexpected errors
         logging.critical(f"Unexpected error in capture_website for {url}: {e}", exc_info=True)
-    
-    # Explicitly return None on caught exceptions before finally block,
-    # because finally does not alter the return value of the try block if an exception is re-raised or a new one occurs there.
-    # However, if an exception occurs in 'finally' itself, that would supersede.
-    # Here, we want to ensure None is returned if any error occurred in the try block.
-    return None
+        return None # Moved directly after the logging statement within this except block
     finally:
         if driver:
             try:
