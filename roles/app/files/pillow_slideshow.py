@@ -17,6 +17,7 @@ from io import BytesIO
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont
+from urllib.parse import urlparse, urlunparse
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -311,55 +312,55 @@ def fetch_document(couchdb_url, tv_uuid):
         logging.critical(f"Unexpected error in fetch_document for {doc_url}: {e}", exc_info=True)
     return None
 
-def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
-    """Watches the CouchDB _changes feed for the specific document."""
-    changes_url = f"{couchdb_url.rstrip('/')}/_changes"
-    params = {
-        "feed": "continuous",
-        "heartbeat": 30000, # 30 seconds in milliseconds
-        "doc_ids": json.dumps([tv_uuid]),
-        "since": "now" # Start from the current state
-    }
-    logging.info(f"Starting to watch changes feed for doc ID {tv_uuid} at {changes_url}")
-
-    while True:
-        session = get_requests_session()
-        try:
-            with session.get(changes_url, params=params, stream=True, timeout=45) as response: # Slightly longer timeout for heartbeat
-                response.raise_for_status()
-                logging.info(f"Successfully connected to changes feed for {tv_uuid}")
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            decoded_line = line.decode('utf-8').strip()
-                            if not decoded_line: # Skip empty lines (heartbeats)
-                                logging.debug("Received heartbeat or empty line from changes feed.")
-                                continue
-                            if decoded_line.startswith('{'): # Ensure it's a JSON object
-                                change = json.loads(decoded_line)
-                                logging.info(f"Received change: {json.dumps(change)}")
-                                if change.get("id") == tv_uuid:
-                                    logging.info(f"Change detected for document {tv_uuid}. Triggering refetch.")
-                                    need_refetch_event.set()
-                            else:
-                                logging.debug(f"Received non-JSON line from changes feed: {decoded_line}")
-                        except json.JSONDecodeError as e:
-                            logging.warning(f"Error decoding JSON from changes feed line: '{line.decode('utf-8', errors='ignore')}': {e}", exc_info=True)
-                        except Exception as e:
-                            logging.error(f"Unexpected error processing change line: {e}", exc_info=True)
-        except requests.exceptions.HTTPError as e: # Specific HTTP error
-            logging.error(f"HTTP error {e.response.status_code} watching changes feed ({changes_url}): {e.response.reason}. Retrying in 30s.", exc_info=True)
-        except requests.exceptions.ConnectionError as e: # Connection error
-            logging.error(f"Connection error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
-        except requests.exceptions.Timeout as e: # This can include read timeouts on the stream
-            logging.warning(f"Timeout watching changes feed ({changes_url}): {e}. Will attempt to reconnect.", exc_info=True)
-        except requests.exceptions.RequestException as e: # Other requests errors
-            logging.error(f"RequestException error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
-        except Exception as e: # Catch any other unexpected errors
-            logging.critical(f"Unexpected critical error in watch_changes loop ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
-        
-        logging.info(f"Attempting to reconnect to changes feed ({changes_url}) after 30 seconds...")
-        time.sleep(30)
+# def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
+#     """Watches the CouchDB _changes feed for the specific document."""
+#     changes_url = f"{couchdb_url.rstrip('/')}/_changes"
+#     params = {
+#         "feed": "continuous",
+#         "heartbeat": 30000, # 30 seconds in milliseconds
+#         "doc_ids": json.dumps([tv_uuid]),
+#         "since": "now" # Start from the current state
+#     }
+#     logging.info(f"Starting to watch changes feed for doc ID {tv_uuid} at {changes_url}")
+#
+#     while True:
+#         session = get_requests_session()
+#         try:
+#             with session.get(changes_url, params=params, stream=True, timeout=45) as response: # Slightly longer timeout for heartbeat
+#                 response.raise_for_status()
+#                 logging.info(f"Successfully connected to changes feed for {tv_uuid}")
+#                 for line in response.iter_lines():
+#                     if line:
+#                         try:
+#                             decoded_line = line.decode('utf-8').strip()
+#                             if not decoded_line: # Skip empty lines (heartbeats)
+#                                 logging.debug("Received heartbeat or empty line from changes feed.")
+#                                 continue
+#                             if decoded_line.startswith('{'): # Ensure it's a JSON object
+#                                 change = json.loads(decoded_line)
+#                                 logging.info(f"Received change: {json.dumps(change)}")
+#                                 if change.get("id") == tv_uuid:
+#                                     logging.info(f"Change detected for document {tv_uuid}. Triggering refetch.")
+#                                     need_refetch_event.set()
+#                             else:
+#                                 logging.debug(f"Received non-JSON line from changes feed: {decoded_line}")
+#                         except json.JSONDecodeError as e:
+#                             logging.warning(f"Error decoding JSON from changes feed line: '{line.decode('utf-8', errors='ignore')}': {e}", exc_info=True)
+#                         except Exception as e:
+#                             logging.error(f"Unexpected error processing change line: {e}", exc_info=True)
+#         except requests.exceptions.HTTPError as e: # Specific HTTP error
+#             logging.error(f"HTTP error {e.response.status_code} watching changes feed ({changes_url}): {e.response.reason}. Retrying in 30s.", exc_info=True)
+#         except requests.exceptions.ConnectionError as e: # Connection error
+#             logging.error(f"Connection error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+#         except requests.exceptions.Timeout as e: # This can include read timeouts on the stream
+#             logging.warning(f"Timeout watching changes feed ({changes_url}): {e}. Will attempt to reconnect.", exc_info=True)
+#         except requests.exceptions.RequestException as e: # Other requests errors
+#             logging.error(f"RequestException error watching changes feed ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+#         except Exception as e: # Catch any other unexpected errors
+#             logging.critical(f"Unexpected critical error in watch_changes loop ({changes_url}): {e}. Retrying in 30s.", exc_info=True)
+#
+#         logging.info(f"Attempting to reconnect to changes feed ({changes_url}) after 30 seconds...")
+#         time.sleep(30)
 
 def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width, screen_height):
     """
@@ -377,15 +378,15 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
         dict: The updated slide_doc with 'processed_image' (Pillow Image with static text) 
               and 'scrolling_texts' (list of surfaces for scrolling text), or None if processing fails.
     """
-    content_name = slide_doc.get('content_name')
-    slide_name = slide_doc.get('name', 'Unnamed Image Slide')
+    content_name = slide_doc.get('name')
+    slide_name = slide_doc.get('name', 'Unnamed Image Slide') # Retain slide_name for logging, even if content_name is now derived from 'name'
 
-    if not content_name:
-        logging.warning(f"Image slide '{slide_name}' is missing 'content_name'. Skipping.")
+    if not content_name: # This now checks if 'name' (used as content_name) is missing
+        logging.warning(f"Image slide '{slide_name}' (which should be content_name) is missing 'name' attribute. Skipping.")
         return None
 
     attachment_url = f"{couchdb_url.rstrip('/')}/{tv_uuid}/{content_name}"
-    logging.info(f"Fetching image attachment for slide '{slide_name}' from: {attachment_url}")
+    logging.info(f"Fetching image attachment for slide '{slide_name}' (using attachment key '{content_name}') from: {attachment_url}")
     
     session = get_requests_session()
     try:
@@ -396,22 +397,22 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
         img_width, img_height = image.size
 
         if img_width == 0 or img_height == 0:
-            logging.warning(f"Image '{content_name}' for slide '{slide_name}' has zero dimension. Skipping.")
+            logging.warning(f"Image '{content_name}' (attachment key) for slide '{slide_name}' has zero dimension. Skipping.")
             return None
         
         # Convert to RGB if it's not (e.g. RGBA, P, L) to ensure compatibility with background
         if image.mode not in ('RGB', 'L'): # Allow L mode (grayscale) as it can be pasted on RGB
              if image.mode == 'RGBA':
-                 logging.debug(f"Image '{content_name}' is RGBA, creating RGB canvas for it before pasting on main canvas.")
+                 logging.debug(f"Image '{content_name}' (attachment key) is RGBA, creating RGB canvas for it before pasting on main canvas.")
                  # Create an RGB canvas for the RGBA image to handle transparency
                  rgb_image = Image.new("RGB", image.size, (0,0,0)) # Black background for this intermediate step
                  rgb_image.paste(image, (0,0), mask=image.split()[3]) # Paste using alpha channel as mask
                  image = rgb_image
              elif image.mode == 'P': # Palette mode
-                 logging.debug(f"Image '{content_name}' is P (Palette) mode, converting to RGB.")
+                 logging.debug(f"Image '{content_name}' (attachment key) is P (Palette) mode, converting to RGB.")
                  image = image.convert('RGB')
              else: # Other modes like LA (Luminance Alpha)
-                 logging.debug(f"Image '{content_name}' is in mode {image.mode}, converting to RGB.")
+                 logging.debug(f"Image '{content_name}' (attachment key) is in mode {image.mode}, converting to RGB.")
                  image = image.convert('RGB')
 
 
@@ -428,10 +429,10 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
         new_height = int(img_height * scale_factor)
 
         if new_width <= 0 or new_height <= 0:
-            logging.warning(f"Calculated new dimensions for '{content_name}' are invalid ({new_width}x{new_height}). Skipping.")
+            logging.warning(f"Calculated new dimensions for '{content_name}' (attachment key) are invalid ({new_width}x{new_height}). Skipping.")
             return None
 
-        logging.info(f"Scaling image '{content_name}' from {img_width}x{img_height} to {new_width}x{new_height} for screen {screen_width}x{screen_height}")
+        logging.info(f"Scaling image '{content_name}' (attachment key) from {img_width}x{img_height} to {new_width}x{new_height} for screen {screen_width}x{screen_height}")
         scaled_image = image.resize((new_width, new_height), Image.LANCZOS)
 
         # Create canvas and paste centered image
@@ -513,21 +514,21 @@ def fetch_and_process_image_slide(slide_doc, couchdb_url, tv_uuid, screen_width,
                 slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGB')
 
 
-        logging.info(f"Successfully processed image and text for slide '{slide_name}' with image '{content_name}'.")
+        logging.info(f"Successfully processed image and text for slide '{slide_name}' with image attachment key '{content_name}'.")
         return slide_doc
 
     except requests.exceptions.HTTPError as e:
-        logging.error(f"HTTP error {e.response.status_code} fetching image {attachment_url} for slide '{slide_name}': {e.response.reason}", exc_info=True)
+        logging.error(f"HTTP error {e.response.status_code} fetching image {attachment_url} (attachment key '{content_name}') for slide '{slide_name}': {e.response.reason}", exc_info=True)
     except requests.exceptions.ConnectionError as e:
-        logging.error(f"Connection error fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+        logging.error(f"Connection error fetching image {attachment_url} (attachment key '{content_name}') for slide '{slide_name}': {e}", exc_info=True)
     except requests.exceptions.Timeout as e:
-        logging.error(f"Timeout fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+        logging.error(f"Timeout fetching image {attachment_url} (attachment key '{content_name}') for slide '{slide_name}': {e}", exc_info=True)
     except requests.exceptions.RequestException as e:
-        logging.error(f"Request error fetching image {attachment_url} for slide '{slide_name}': {e}", exc_info=True)
+        logging.error(f"Request error fetching image {attachment_url} (attachment key '{content_name}') for slide '{slide_name}': {e}", exc_info=True)
     except (IOError, UnidentifiedImageError) as e: 
-        logging.error(f"Pillow error processing image {content_name} for slide '{slide_name}': {e}", exc_info=True)
+        logging.error(f"Pillow error processing image with attachment key '{content_name}' for slide '{slide_name}': {e}", exc_info=True)
     except Exception as e:
-        logging.critical(f"Unexpected error processing image slide '{slide_name}' (image: {content_name}): {e}", exc_info=True)
+        logging.critical(f"Unexpected error processing image slide '{slide_name}' (attachment key '{content_name}'): {e}", exc_info=True)
     
     return None
 
@@ -1258,23 +1259,32 @@ def main():
     app_config = load_config(CONFIG_FILE_PATH)
     logging.info(f"Loaded configuration: {app_config}")
     
-    couchdb_url = app_config['couchdb_url']
+    raw_couchdb_url_from_config = app_config['couchdb_url']
+    parsed_config_url = urlparse(raw_couchdb_url_from_config)
+    slideshows_db_path = "/slideshows" # Hardcode the database name as per user preference
+    couchdb_slideshows_db_url = urlunparse((
+        parsed_config_url.scheme,
+        parsed_config_url.netloc,
+        slideshows_db_path,
+        '', '', '' # No params, query, or fragment
+    ))
+    logging.info(f"All CouchDB operations will target the slideshows database determined as: {couchdb_slideshows_db_url}")
     tv_uuid = app_config['tv_uuid']
 
     fb_info = get_framebuffer_info(FB_DEVICE) # fb_info includes width, height, bpp, img_mode, fb_obj (None for now)
     screen_width, screen_height, bpp, img_mode = fb_info['width'], fb_info['height'], fb_info['bpp'], fb_info['img_mode']
 
 
-    changes_thread = threading.Thread(
-        target=watch_changes, args=(couchdb_url, tv_uuid, need_refetch), daemon=True
-    )
-    changes_thread.start()
-    logging.info("CouchDB changes watcher thread started.")
+    # changes_thread = threading.Thread(
+    #     target=watch_changes, args=(couchdb_slideshows_db_url, tv_uuid, need_refetch), daemon=True
+    # )
+    # changes_thread.start()
+    # logging.info("CouchDB changes watcher thread started.") # This log might be misleading now, but keeping for consistency unless asked to remove
 
     current_slides = []
-    initial_doc = fetch_document(couchdb_url, tv_uuid)
+    initial_doc = fetch_document(couchdb_slideshows_db_url, tv_uuid)
     if initial_doc:
-        current_slides = process_slides_from_doc(initial_doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config)
+        current_slides = process_slides_from_doc(initial_doc, couchdb_slideshows_db_url, tv_uuid, screen_width, screen_height, app_config)
     else:
         logging.warning("Could not fetch initial slideshow document. Starting with empty slide list.")
 
@@ -1294,9 +1304,9 @@ def main():
                 # Cleanup old temp files from the previous list of slides
                 cleanup_all_temp_files() # Uses global processed_slides_global_for_cleanup
                 
-                new_doc = fetch_document(couchdb_url, tv_uuid)
+                new_doc = fetch_document(couchdb_slideshows_db_url, tv_uuid)
                 if new_doc:
-                    current_slides = process_slides_from_doc(new_doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config)
+                    current_slides = process_slides_from_doc(new_doc, couchdb_slideshows_db_url, tv_uuid, screen_width, screen_height, app_config)
                     # processed_slides_global_for_cleanup is updated by process_slides_from_doc
                 else:
                     current_slides = []
