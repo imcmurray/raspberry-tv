@@ -374,6 +374,75 @@ def upload_attachment_to_couchdb(db_url, doc_id, doc_rev, attachment_name, attac
 
     return None
 
+def update_tv_status_document(db_url, status_doc_id, tv_uuid, current_slide_name):
+    """
+    Creates or updates the TV status document in CouchDB.
+
+    Args:
+        db_url (str): The base URL of the CouchDB database (e.g., http://host/slideshows).
+        status_doc_id (str): The ID for the status document (e.g., "status_YOUR_TV_UUID").
+        tv_uuid (str): The UUID of the TV.
+        current_slide_name (str): The name/ID of the currently displayed slide.
+    """
+    logging.info(f"Attempting to update TV status for doc '{status_doc_id}' with slide '{current_slide_name}'.")
+
+    # Prepare the main payload
+    payload = {
+        "type": "tv_status",
+        "tv_uuid": tv_uuid,
+        "current_slide_id": current_slide_name,
+        "current_slide_filename": current_slide_name, # Assuming name is the filename
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+
+    # Attempt to fetch the existing status document to get its _rev
+    existing_doc = fetch_document(db_url, status_doc_id) # fetch_document handles its own logging
+
+    if existing_doc and existing_doc.get('_rev'):
+        payload['_rev'] = existing_doc['_rev']
+        logging.debug(f"Updating existing status doc '{status_doc_id}' at revision {payload['_rev']}.")
+    elif existing_doc: # Document exists but no _rev? Should not happen if fetch_document is robust.
+        logging.warning(f"Status doc '{status_doc_id}' fetched but has no _rev. Attempting to update without it.")
+    else: # Document likely doesn't exist (fetch_document returned None or a non-doc)
+        logging.info(f"Status document '{status_doc_id}' not found or failed to fetch. Will attempt to create new.")
+        # No _rev in payload, so it will be a new document creation if status_doc_id doesn't exist,
+        # or fail if it does exist but we couldn't get _rev (CouchDB prevents overwrite without _rev).
+
+    session = get_requests_session()
+    target_url = f"{db_url.rstrip('/')}/{status_doc_id}"
+
+    try:
+        response = session.put(target_url, json=payload, timeout=10) # Standard timeout
+        response.raise_for_status() # Raise HTTPError for bad responses (4XX or 5XX)
+
+        response_json = response.json()
+        if response_json.get("ok"):
+            new_rev = response_json.get("rev")
+            logging.info(f"Successfully updated/created TV status doc '{status_doc_id}'. New revision: {new_rev}.")
+            return True # Indicate success
+        else:
+            logging.error(f"Failed to update/create TV status doc '{status_doc_id}'. Response: {response.text}")
+            return False
+
+    except requests.exceptions.HTTPError as e:
+        # Log specific CouchDB errors if possible (e.g., conflict)
+        if e.response.status_code == 409: # Conflict
+            logging.warning(f"Conflict (409) updating TV status doc '{status_doc_id}'. Outdated revision? {e.response.text}")
+        else:
+            logging.error(f"HTTP error {e.response.status_code} updating TV status doc '{status_doc_id}': {e.response.reason} - {e.response.text}")
+    except requests.exceptions.ConnectionError as e:
+        logging.error(f"Connection error updating TV status doc '{status_doc_id}': {e}")
+    except requests.exceptions.Timeout as e:
+        logging.error(f"Timeout updating TV status doc '{status_doc_id}': {e}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Generic error updating TV status doc '{status_doc_id}': {e}")
+    except json.JSONDecodeError as e: # Should be caught by session.put if response is not JSON
+        logging.error(f"Error decoding JSON response after updating TV status doc '{status_doc_id}': {e}")
+    except Exception as e:
+        logging.critical(f"Unexpected error in update_tv_status_document for '{status_doc_id}': {e}", exc_info=True)
+
+    return False # Indicate failure
+
 # def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
 #     """Watches the CouchDB _changes feed for the specific document."""
 #     changes_url = f"{couchdb_url.rstrip('/')}/_changes"
@@ -1500,6 +1569,13 @@ def main():
                     write_to_framebuffer(fb_info.get('fb_obj'), incoming_canvas_for_transition, screen_width, screen_height, bpp, img_mode)
                     outgoing_slide_canvas = incoming_canvas_for_transition.copy()
 
+            current_slide_name_for_status = slide.get('name', f"Unnamed Slide {current_slide_index + 1}")
+            # tv_uuid is available from app_config['tv_uuid'] or already in a variable
+            # couchdb_slideshows_db_url is also available from earlier in main()
+            status_doc_id = f"status_{tv_uuid}"
+
+            logging.info(f"Updating TV status for displayed slide: '{current_slide_name_for_status}' to doc ID '{status_doc_id}'.")
+            update_tv_status_document(couchdb_slideshows_db_url, status_doc_id, tv_uuid, current_slide_name_for_status)
 
             # Main display phase for the slide
             slide_start_time = time.time()
