@@ -1363,7 +1363,7 @@ def main():
 
             # Perform transition
             if outgoing_slide_canvas and transition_time_ms > 0:
-                perform_fade_transition(FB_DEVICE, screen_width, screen_height, bpp, outgoing_slide_canvas, incoming_canvas_for_transition, transition_time_ms)
+                perform_fade_transition(FB_DEVICE, screen_width, screen_height, bpp, img_mode, outgoing_slide_canvas, incoming_canvas_for_transition, transition_time_ms)
             else: # No transition (first slide or zero duration)
                 # Apply text and scroll for the first frame before writing if it's not a video slide
                 # Video slides handle text per frame.
