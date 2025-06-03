@@ -9,7 +9,9 @@ time_zone: America/Boise
 venv_path: /opt/slideshow/venv
 venv_python: /opt/slideshow/venv/bin/python
 
-# OS-specific user configuration
-# These will be set by the common role based on detected OS
-service_user: "{{ 'pi' if ansible_distribution == 'Debian' else 'ubuntu' }}"
-service_group: "{{ 'pi' if ansible_distribution == 'Debian' else 'ubuntu' }}"
+# Service user configuration for Raspberry Pi OS
+# Defaulting to 'pi' as this setup is primarily for Raspberry Pi OS.
+# For other Debian/Ubuntu based systems, this might need adjustment
+# or a more sophisticated user management strategy in the Ansible roles.
+service_user: "pi"
+service_group: "pi"
