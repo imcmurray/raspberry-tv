@@ -1081,59 +1081,57 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, couc
                 temp_layer = Image.new('RGBA', slide_doc['processed_image'].size, (0,0,0,0))
                 temp_layer.paste(text_render_surface, (pos_x, pos_y))
                 slide_doc['processed_image'] = Image.alpha_composite(slide_doc['processed_image'], temp_layer).convert('RGB')
-        return slide_doc
-    else:
-        logging.error(f"Failed to capture and process website slide: {slide_name} ({url})")
-        # Return the slide_doc without 'processed_image' to indicate failure for this slide
-        # Or, if strict, return None, and let process_slides_from_doc filter it out
-        # return None # Original return if all fails
 
-    logging.info(f"WSS_UPLOAD_DEBUG: About to check processed_image for upload. Type: {type(slide_doc.get('processed_image'))}, Is None: {slide_doc.get('processed_image') is None}, Image Mode (if not None): {slide_doc.get('processed_image').mode if slide_doc.get('processed_image') else 'N/A'}")
-    # Upload the processed image to CouchDB as an attachment
-    if slide_doc.get('processed_image'):
-        logging.info("WSS_UPLOAD_DEBUG: Condition `slide_doc.get('processed_image')` is true. Entering upload logic block.")
-        try:
-            image_to_upload = slide_doc['processed_image']
+        # MOVED UPLOAD LOGIC AND DEBUG LOGS HERE
+        logging.info(f"WSS_UPLOAD_DEBUG: About to check processed_image for upload. Type: {type(slide_doc.get('processed_image'))}, Is None: {slide_doc.get('processed_image') is None}, Image Mode (if not None): {slide_doc.get('processed_image').mode if slide_doc.get('processed_image') else 'N/A'}")
+        if slide_doc.get('processed_image'):
+            logging.info("WSS_UPLOAD_DEBUG: Condition `slide_doc.get('processed_image')` is true. Entering upload logic block.")
+            try:
+                image_to_upload = slide_doc['processed_image']
 
-            # Convert Pillow Image to PNG bytes
-            png_buffer = io.BytesIO()
-            image_to_upload.save(png_buffer, format="PNG")
-            png_bytes = png_buffer.getvalue()
-            png_buffer.close()
+                # Convert Pillow Image to PNG bytes
+                png_buffer = io.BytesIO()
+                image_to_upload.save(png_buffer, format="PNG")
+                png_bytes = png_buffer.getvalue()
+                png_buffer.close()
 
-            # Generate a unique attachment name
-            base_name = slide_doc.get('name', 'website_capture')
-            attachment_name = f"{base_name}_{int(time.time())}.png"
+                # Generate a unique attachment name
+                base_name = slide_doc.get('name', 'website_capture')
+                attachment_name = f"{base_name}_{int(time.time())}.png"
 
-            logging.info(f"Preparing to upload captured website image as '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
+                logging.info(f"Preparing to upload captured website image as '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
 
-            # Fetch current document revision to allow upload
-            doc_for_rev = fetch_document(couchdb_slideshows_db_url, tv_uuid)
+                # Fetch current document revision to allow upload
+                doc_for_rev = fetch_document(couchdb_slideshows_db_url, tv_uuid)
 
-            if doc_for_rev and doc_for_rev.get('_rev'):
-                current_rev = doc_for_rev.get('_rev')
-                logging.info(f"Fetched current doc revision '{current_rev}' for '{tv_uuid}' before attachment upload.")
+                if doc_for_rev and doc_for_rev.get('_rev'):
+                    current_rev = doc_for_rev.get('_rev')
+                    logging.info(f"Fetched current doc revision '{current_rev}' for '{tv_uuid}' before attachment upload.")
 
-                new_rev_after_upload = upload_attachment_to_couchdb(
-                    couchdb_slideshows_db_url,
-                    tv_uuid,
-                    current_rev,
-                    attachment_name,
-                    png_bytes,
-                    "image/png"
-                )
+                    new_rev_after_upload = upload_attachment_to_couchdb(
+                        couchdb_slideshows_db_url,
+                        tv_uuid,
+                        current_rev,
+                        attachment_name,
+                        png_bytes,
+                        "image/png"
+                    )
 
-                if new_rev_after_upload:
-                    logging.info(f"Successfully uploaded website screenshot '{attachment_name}'. New doc rev: {new_rev_after_upload}.")
+                    if new_rev_after_upload:
+                        logging.info(f"Successfully uploaded website screenshot '{attachment_name}'. New doc rev: {new_rev_after_upload}.")
+                    else:
+                        logging.error(f"Failed to upload website screenshot '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
                 else:
-                    logging.error(f"Failed to upload website screenshot '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
-            else:
-                logging.error(f"Could not fetch document or revision for '{tv_uuid}' to upload attachment for slide '{slide_doc.get('name', 'N/A')}'.")
+                    logging.error(f"Could not fetch document or revision for '{tv_uuid}' to upload attachment for slide '{slide_doc.get('name', 'N/A')}'.")
 
-        except Exception as e:
-            logging.error(f"Error during website screenshot to CouchDB attachment conversion or upload for slide '{slide_doc.get('name', 'N/A')}': {e}", exc_info=True)
+            except Exception as e:
+                logging.error(f"Error during website screenshot to CouchDB attachment conversion or upload for slide '{slide_doc.get('name', 'N/A')}': {e}", exc_info=True)
 
-    return slide_doc # Return slide_doc whether upload succeeded or not, as image is still in cache/memory
+        return slide_doc # End of successful capture path
+    else: # Capture failed
+        logging.error(f"Failed to capture and process website slide: {slide_name} ({url})")
+        return None # End of failed capture path
+    # The final 'return slide_doc' that was here is now removed as all paths should have explicit returns.
 
 
 def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config):
