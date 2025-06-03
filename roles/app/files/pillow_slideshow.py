@@ -1168,7 +1168,7 @@ def write_to_framebuffer(fb_obj_unused, image_data, screen_width, screen_height,
     # time.sleep(0.001) # Simulate a small delay of writing to framebuffer
 
 
-def apply_text_and_scroll(base_canvas, slide_text_overlays, scroll_positions, screen_width, delta_time):
+def apply_text_and_scroll(base_canvas, slide_text_overlays, scroll_positions, screen_width, screen_height, delta_time):
     """
     Applies static and scrolling text overlays to a copy of the base_canvas.
     For video, `base_canvas` is a single frame.
@@ -1381,7 +1381,8 @@ def main():
                         incoming_canvas_for_transition, 
                         slide.get('scrolling_texts', []), # Pass scrolling text definitions
                         slide_scroll_positions[current_slide_index], 
-                        screen_width, screen_height, # Pass screen_height
+                        screen_width,
+                        screen_height, # Add screen_height here
                         0 
                     )
                     write_to_framebuffer(fb_info.get('fb_obj'), final_display_image, screen_width, screen_height, bpp, img_mode)
@@ -1451,7 +1452,8 @@ def main():
                                             frame_canvas, 
                                             combined_text_defs, # Pass combined static and scrolling text defs
                                             slide_scroll_positions[current_slide_index], 
-                                            screen_width, screen_height, # Pass screen_height
+                                            screen_width,
+                                            screen_height, # Add screen_height here
                                             video_frame_duration # delta_time for this frame
                                         )
                                         write_to_framebuffer(fb_info.get('fb_obj'), final_frame_for_fb, screen_width, screen_height, bpp, img_mode)
@@ -1496,7 +1498,8 @@ def main():
                             base_image, 
                             slide.get('scrolling_texts', []), # Only pass scrolling texts here
                             slide_scroll_positions[current_slide_index], 
-                            screen_width, screen_height, # Pass screen_height
+                            screen_width,
+                            screen_height, # Add screen_height here
                             frame_target_duration 
                         )
                         write_to_framebuffer(fb_info.get('fb_obj'), current_display_canvas, screen_width, screen_height, bpp, img_mode)
