@@ -1019,8 +1019,10 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, couc
         # Or, if strict, return None, and let process_slides_from_doc filter it out
         # return None # Original return if all fails
 
+    logging.info(f"WSS_UPLOAD_DEBUG: About to check processed_image for upload. Type: {type(slide_doc.get('processed_image'))}, Is None: {slide_doc.get('processed_image') is None}, Image Mode (if not None): {slide_doc.get('processed_image').mode if slide_doc.get('processed_image') else 'N/A'}")
     # Upload the processed image to CouchDB as an attachment
     if slide_doc.get('processed_image'):
+        logging.info("WSS_UPLOAD_DEBUG: Condition `slide_doc.get('processed_image')` is true. Entering upload logic block.")
         try:
             image_to_upload = slide_doc['processed_image']
 
