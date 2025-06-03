@@ -1,27 +1,3 @@
-- name: Configure Ubuntu dual HDMI setup
-  block:
-    - name: Add user to video group for framebuffer access
-      user:
-        name: "{{ service_user }}"
-        groups: video
-        append: yes
-    
-    - name: Create framebuffer devices if they don't exist
-      shell: |
-        if [ ! -e /dev/fb0 ]; then
-          mknod /dev/fb0 c 29 0
-          chgrp video /dev/fb0
-          chmod 664 /dev/fb0
-        fi
-        if [ ! -e /dev/fb1 ]; then
-          mknod /dev/fb1 c 29 32
-          chgrp video /dev/fb1
-          chmod 664 /dev/fb1
-        fi
-      become: yes
-    
-  when: target_os == "ubuntu"
-
 - name: Check for config.txt location
   stat:
     path: "{{ item }}"
@@ -29,38 +5,34 @@
   loop:
     - /boot/firmware/config.txt
     - /boot/config.txt
-  when: target_os == "raspios"
 
 - name: Set boot config path
   set_fact:
     boot_config_path: "{{ item.item }}"
   loop: "{{ config_locations.results }}"
   when: 
-    - target_os == "raspios"
     - item.stat.exists
 
-- name: Configure dual HDMI setup
+- name: Configure config.txt
   lineinfile:
     path: "{{ boot_config_path }}"
     line: '{{ item }}'
   loop:
-    - '# Dual HDMI Configuration'
-    - '# HDMI0 (primary) - Console/SSH access'
-    - 'hdmi_group:0=1'
-    - 'hdmi_mode:0=16'
-    - '# HDMI1 (secondary) - Slideshow display' 
-    - 'hdmi_group:1=1'
-    - 'hdmi_mode:1=16'
-    - '# Enable both HDMI outputs'
-    - 'hdmi_force_hotplug:0=1'
-    - 'hdmi_force_hotplug:1=1'
-    - '# Use legacy graphics for separate framebuffers'
-    - 'dtoverlay=vc4-fkms-v3d'
+    - '# Force both HDMI ports to be active'
+    - 'hdmi_force_hotplug=1'
+    - 'hdmi_group=2'
+    - 'hdmi_mode=16'
+    - 'max_framebuffers=2'
+    - 'framebuffer_width=1920'
+    - 'framebuffer_height=1080'
     - '# Disable KMS overlays to get separate framebuffers'
     - '#dtoverlay=vc4-kms-v3d'
+    - '# GPU memory for graphics'
+    - 'gpu_mem=128'
+    - '# Disable WiFi'
+    - 'dtoverlay=disable-wifi'
   notify: reboot
   when: 
-    - target_os == "raspios"
     - boot_config_path is defined
 
 - name: Check for cmdline.txt location
@@ -70,14 +42,12 @@
   loop:
     - /boot/firmware/cmdline.txt
     - /boot/cmdline.txt
-  when: target_os == "raspios"
 
 - name: Set boot cmdline path
   set_fact:
     boot_cmdline_path: "{{ item.item }}"
   loop: "{{ cmdline_locations.results }}"
   when: 
-    - target_os == "raspios"
     - item.stat.exists
 
 - name: Add consoleblank=0 to cmdline.txt
@@ -87,5 +57,4 @@
     fi
   notify: reboot
   when: 
-    - target_os == "raspios"
     - boot_cmdline_path is defined
