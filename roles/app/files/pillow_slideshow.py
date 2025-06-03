@@ -1194,7 +1194,7 @@ def apply_text_and_scroll(base_canvas, slide_text_overlays, scroll_positions, sc
     if canvas_with_text.mode != 'RGBA': # Ensure RGBA for alpha compositing
         canvas_with_text = canvas_with_text.convert('RGBA')
 
-    for idx, text_info in enumerate(slide_text_definitions):
+    for idx, text_info in enumerate(slide_text_overlays):
         text_surface = text_info['surface']
         params = text_info['params']
         
