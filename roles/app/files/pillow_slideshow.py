@@ -59,6 +59,8 @@ last_datetime_minute = None
 website_screenshot_cache = {}
 WEBSITE_CACHE_EXPIRY_SECONDS = 3600 # Cache website screenshots for 1 hour
 MAX_WEBSITE_CACHE_ENTRIES = 10 # Max number of website screenshots to keep in cache
+active_processing_urls = set()
+website_cache_lock = threading.Lock()
 
 # Transition Constants
 FADE_STEPS = 25 # Number of steps for fade animation
@@ -442,6 +444,131 @@ def update_tv_status_document(db_url, status_doc_id, tv_uuid, current_slide_name
         logging.critical(f"Unexpected error in update_tv_status_document for '{status_doc_id}': {e}", exc_info=True)
 
     return False # Indicate failure
+
+def background_website_processor(slide_definition, screen_width, screen_height, couchdb_slideshows_db_url, tv_uuid, active_tasks_set, cache_lock):
+    """
+    Processes a website slide in a background thread:
+    1. Captures screenshot using Selenium.
+    2. Applies text overlays.
+    3. Updates a shared cache.
+    4. Uploads the screenshot as an attachment to CouchDB.
+    """
+    url = slide_definition.get('url')
+    slide_name = slide_definition.get('name', 'Unnamed Website Slide')
+
+    if not url:
+        logging.error(f"[BGProc {slide_name}] URL is missing in slide definition. Exiting task.")
+        # Ensure URL is removed from active_tasks_set even on early exit, if it was added before calling.
+        # The plan is to add to set *before* starting thread, so removal is always needed.
+        if url in active_tasks_set: # Check if url was actually added, though it should have been
+             try:
+                active_tasks_set.remove(url)
+             except KeyError: # Should not happen if logic is correct
+                logging.warning(f"[BGProc {slide_name}] URL {url} not found in active_tasks_set for removal on error.")
+        return
+
+    logging.info(f"[BGProc {slide_name}] Starting background processing for URL: {url}")
+
+    try:
+        # 1. Capture Website
+        captured_image_canvas = capture_website(url, screen_width, screen_height)
+
+        if not captured_image_canvas:
+            logging.error(f"[BGProc {slide_name}] Failed to capture website canvas for {url}.")
+            return # Exit if capture failed
+
+        # 2. Apply Text Overlays (similar to fetch_and_process_website_slide)
+        # Create a temporary slide_doc for text processing to keep it self-contained
+        temp_slide_doc_for_text = slide_definition.copy()
+        temp_slide_doc_for_text['processed_image'] = captured_image_canvas # Start with the raw capture
+        temp_slide_doc_for_text['scrolling_texts'] = [] # Initialize if text overlays add to this
+
+        text_overlays = temp_slide_doc_for_text.get('text_overlays', [])
+        if not isinstance(text_overlays, list): text_overlays = []
+
+        for text_params in text_overlays:
+            text_content = text_params.get('text')
+            if not text_content: continue
+
+            # Assuming get_cached_text_surface handles {datetime} replacement
+            text_render_surface, _ = get_cached_text_surface(text_params, screen_width)
+            if not text_render_surface: continue
+
+            if text_params.get('scroll', False):
+                # For background processing, we might not need to store scrolling_texts
+                # if the main thread will re-evaluate them on the cached image.
+                # Let's assume for now that the cached image should be final with static text.
+                # So, if scroll is true for an overlay in background_website_processor,
+                # it might be ignored or logged, as this function primarily prepares the base image.
+                # For simplicity, this example will only composite non-scrolling text.
+                # A more advanced version might pass scrolling text definitions to the main thread.
+                logging.debug(f"[BGProc {slide_name}] Skipping scrolling text '{text_content[:30]}' for pre-cached image.")
+                pass # Or handle differently
+            else: # Apply static text
+                pos_x, pos_y = 0,0
+                margin = text_params.get('margin',10)
+                text_align = text_params.get('align','bottom_center')
+                surf_w, surf_h = text_render_surface.size
+                if text_align == 'top_left': pos_x,pos_y=margin,margin
+                elif text_align == 'top_center': pos_x,pos_y=(screen_width-surf_w)//2,margin
+                elif text_align == 'bottom_center': pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin
+                else: pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin # Default
+
+                if temp_slide_doc_for_text['processed_image'].mode != 'RGBA':
+                    temp_slide_doc_for_text['processed_image'] = temp_slide_doc_for_text['processed_image'].convert('RGBA')
+
+                temp_layer = Image.new('RGBA', temp_slide_doc_for_text['processed_image'].size, (0,0,0,0))
+                temp_layer.paste(text_render_surface, (pos_x, pos_y))
+                temp_slide_doc_for_text['processed_image'] = Image.alpha_composite(temp_slide_doc_for_text['processed_image'], temp_layer).convert('RGB')
+
+        final_processed_image = temp_slide_doc_for_text['processed_image']
+        logging.info(f"[BGProc {slide_name}] Successfully applied text overlays for {url}.")
+
+        # 3. Update Shared Cache
+        cache_key = hashlib.md5(url.encode('utf-8')).hexdigest()
+        with cache_lock:
+            if len(website_screenshot_cache) >= MAX_WEBSITE_CACHE_ENTRIES and cache_key not in website_screenshot_cache : # Evict if full and new key
+                oldest_key = min(website_screenshot_cache, key=lambda k: website_screenshot_cache[k]['timestamp'])
+                logging.info(f"[BGProc {slide_name}] Website cache full. Removing oldest entry for URL hash: {oldest_key}")
+                del website_screenshot_cache[oldest_key]
+            website_screenshot_cache[cache_key] = {'image': final_processed_image.copy(), 'timestamp': time.time()}
+        logging.info(f"[BGProc {slide_name}] Updated website_screenshot_cache for {url}.")
+
+        # 4. Upload Attachment to CouchDB
+        png_buffer = io.BytesIO()
+        final_processed_image.save(png_buffer, format="PNG")
+        png_bytes = png_buffer.getvalue()
+        png_buffer.close()
+
+        attachment_name = f"{slide_name}_{int(time.time())}.png" # Use slide_name from definition
+
+        logging.info(f"[BGProc {slide_name}] Preparing to upload captured website image as '{attachment_name}'.")
+        doc_for_rev = fetch_document(couchdb_slideshows_db_url, tv_uuid)
+
+        if doc_for_rev and doc_for_rev.get('_rev'):
+            current_rev = doc_for_rev.get('_rev')
+            logging.info(f"[BGProc {slide_name}] Fetched current doc revision '{current_rev}' for '{tv_uuid}'.")
+
+            new_rev_after_upload = upload_attachment_to_couchdb(
+                couchdb_slideshows_db_url, tv_uuid, current_rev,
+                attachment_name, png_bytes, "image/png"
+            )
+            if new_rev_after_upload:
+                logging.info(f"[BGProc {slide_name}] Successfully uploaded screenshot '{attachment_name}'. New doc rev: {new_rev_after_upload}.")
+            else:
+                logging.error(f"[BGProc {slide_name}] Failed to upload screenshot '{attachment_name}'.")
+        else:
+            logging.error(f"[BGProc {slide_name}] Could not fetch document or revision for '{tv_uuid}' to upload attachment.")
+
+    except Exception as e:
+        logging.error(f"[BGProc {slide_name}] Error during background processing for {url}: {e}", exc_info=True)
+    finally:
+        if url: # url could be None if slide_definition was malformed
+            active_tasks_set.discard(url) # Use discard to avoid KeyError
+            logging.info(f"[BGProc {slide_name}] Discarded/confirmed removal of {url} from active_processing_urls. Set size: {len(active_tasks_set)}")
+        else:
+            logging.debug(f"[BGProc {slide_name}] URL was None, no specific URL to discard from active_tasks_set.")
+        logging.info(f"[BGProc {slide_name}] Finished background processing for URL: {url if url else 'Unknown URL'}")
 
 # def watch_changes(couchdb_url, tv_uuid, need_refetch_event):
 #     """Watches the CouchDB _changes feed for the specific document."""
@@ -989,76 +1116,59 @@ def capture_website(url, target_screen_width, target_screen_height, timeout=30):
                 logging.error(f"Error quitting WebDriver for {url}: {e}", exc_info=True)
 
 
-def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, couchdb_slideshows_db_url, tv_uuid):
+def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, cache_lock):
     """
-    Fetches/captures a website screenshot, processes it, applies text overlays, and uploads to CouchDB.
-    Uses a cache for website screenshots.
+    Processes a website slide, primarily by trying to use a pre-cached image.
+    If not cached, falls back to synchronous capture (without upload).
+    Text overlays are applied if not already on a cached image (or re-applied).
     """
     slide_name = slide_doc.get('name', 'Unnamed Website Slide')
     url = slide_doc.get('url')
 
     if not url:
-        logging.error(f"Website slide '{slide_name}' is missing 'url'. Skipping.")
-        return None
+        logging.error(f"[FGProc {slide_name}] URL is missing. Skipping.")
+        return None # Or return slide_doc if preferred for consistency, but None is clearer for failure
 
-    # Cache Check
-    cache_key = hashlib.md5(url.encode('utf-8')).hexdigest() # Use hash of URL for cleaner key
-    if cache_key in website_screenshot_cache:
-        cached_item = website_screenshot_cache[cache_key]
-        if time.time() - cached_item['timestamp'] < WEBSITE_CACHE_EXPIRY_SECONDS:
-            logging.info(f"Using cached screenshot for {url} (Slide: '{slide_name}')")
-            # Ensure the cached image is copied and has the correct screen dimensions if they changed
-            # For simplicity, we assume screen dimensions are constant for cached images,
-            # or that they are re-scaled if needed (though current cache stores final canvas)
-            # If screen dimensions can change dynamically, the cache might need to store intermediate images
-            # or re-process. For now, let's assume the cached image is display-ready.
-            slide_doc['processed_image'] = cached_item['image'].copy() 
-            # Apply text overlays (as they are not part of the website screenshot cache)
-            # This reuses the text overlay logic from fetch_and_process_image_slide structure
-            slide_doc['scrolling_texts'] = []
-            text_overlays = slide_doc.get('text_overlays', [])
-            if not isinstance(text_overlays, list): text_overlays = []
-            for text_params in text_overlays:
-                # (Text processing logic copied and adapted from fetch_and_process_image_slide)
+    cached_image_for_display = None
+    cache_key = hashlib.md5(url.encode('utf-8')).hexdigest()
+
+    with cache_lock:
+        if cache_key in website_screenshot_cache:
+            cached_item = website_screenshot_cache[cache_key]
+            if time.time() - cached_item['timestamp'] < WEBSITE_CACHE_EXPIRY_SECONDS:
+                logging.info(f"[FGProc {slide_name}] Using fresh cached image for {url}.")
+                # Assuming cached image already has text overlays from background processor
+                cached_image_for_display = cached_item['image'].copy()
+            else:
+                logging.info(f"[FGProc {slide_name}] Cached image for {url} expired.")
+        else:
+            logging.info(f"[FGProc {slide_name}] No cache entry for {url}.")
+
+    if cached_image_for_display:
+        slide_doc['processed_image'] = cached_image_for_display
+        # Text overlays are assumed to be on the cached image by the background processor.
+        # However, scrolling text surfaces are transient and should be prepared here.
+        slide_doc['scrolling_texts'] = []
+        text_overlays = slide_doc.get('text_overlays', [])
+        if not isinstance(text_overlays, list): text_overlays = []
+        for text_params in text_overlays:
+            if text_params.get('scroll', False): # Only prepare scrolling for foreground
                 text_content = text_params.get('text')
                 if not text_content: continue
                 text_render_surface, text_original_width = get_cached_text_surface(text_params, screen_width)
                 if not text_render_surface: continue
-                if text_params.get('scroll', False):
-                    slide_doc['scrolling_texts'].append({'surface': text_render_surface, 'original_width': text_original_width, 'params': text_params})
-                else:
-                    pos_x, pos_y = 0,0; margin = text_params.get('margin',10); text_align = text_params.get('align','bottom_center'); surf_w, surf_h = text_render_surface.size
-                    if text_align == 'top_left': pos_x,pos_y=margin,margin
-                    elif text_align == 'top_center': pos_x,pos_y=(screen_width-surf_w)//2,margin
-                    # ... (include all other alignment options as in fetch_and_process_image_slide)
-                    elif text_align == 'bottom_center': pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin
-                    else: pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin # Default to bottom_center
-                    
-                    if slide_doc['processed_image'].mode != 'RGBA': slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGBA')
-                    temp_layer = Image.new('RGBA', slide_doc['processed_image'].size, (0,0,0,0))
-                    temp_layer.paste(text_render_surface, (pos_x, pos_y))
-                    slide_doc['processed_image'] = Image.alpha_composite(slide_doc['processed_image'], temp_layer).convert('RGB')
-            return slide_doc
-        else:
-            logging.info(f"Cached screenshot for {url} expired. Re-capturing.")
+                slide_doc['scrolling_texts'].append({'surface': text_render_surface, 'original_width': text_original_width, 'params': text_params})
+        return slide_doc
 
-    # Capture Website
+    # If not found in cache or expired, attempt synchronous capture as a fallback
+    logging.info(f"[FGProc {slide_name}] No fresh cached image. Attempting synchronous capture for {url} as fallback.")
     captured_image_canvas = capture_website(url, screen_width, screen_height)
 
     if captured_image_canvas:
-        slide_doc['processed_image'] = captured_image_canvas
-        
-        # Cache Update
-        if len(website_screenshot_cache) >= MAX_WEBSITE_CACHE_ENTRIES:
-            # Simple FIFO eviction by finding the oldest entry
-            oldest_key = min(website_screenshot_cache, key=lambda k: website_screenshot_cache[k]['timestamp'])
-            logging.info(f"Website cache full. Removing oldest entry for URL hash: {oldest_key}")
-            del website_screenshot_cache[oldest_key]
-        
-        website_screenshot_cache[cache_key] = {'image': captured_image_canvas.copy(), 'timestamp': time.time()}
-        logging.info(f"Cached new screenshot for {url}")
+        logging.info(f"[FGProc {slide_name}] Synchronous capture successful for {url}.")
+        slide_doc['processed_image'] = captured_image_canvas # Base image
 
-        # Apply text overlays (same logic as above for cached version)
+        # Apply text overlays (static and prepare scrolling)
         slide_doc['scrolling_texts'] = []
         text_overlays = slide_doc.get('text_overlays', [])
         if not isinstance(text_overlays, list): text_overlays = []
@@ -1067,71 +1177,32 @@ def fetch_and_process_website_slide(slide_doc, screen_width, screen_height, couc
             if not text_content: continue
             text_render_surface, text_original_width = get_cached_text_surface(text_params, screen_width)
             if not text_render_surface: continue
+
             if text_params.get('scroll', False):
-                 slide_doc['scrolling_texts'].append({'surface': text_render_surface, 'original_width': text_original_width, 'params': text_params})
-            else:
-                pos_x, pos_y = 0,0; margin = text_params.get('margin',10); text_align = text_params.get('align','bottom_center'); surf_w, surf_h = text_render_surface.size
+                slide_doc['scrolling_texts'].append({'surface': text_render_surface, 'original_width': text_original_width, 'params': text_params})
+            else: # Apply static text to the synchronously captured image
+                pos_x, pos_y = 0,0
+                margin = text_params.get('margin',10); text_align = text_params.get('align','bottom_center')
+                surf_w, surf_h = text_render_surface.size
                 if text_align == 'top_left': pos_x,pos_y=margin,margin
                 elif text_align == 'top_center': pos_x,pos_y=(screen_width-surf_w)//2,margin
-                # ... (include all other alignment options as in fetch_and_process_image_slide)
                 elif text_align == 'bottom_center': pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin
-                else: pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin # Default to bottom_center
+                else: pos_x,pos_y=(screen_width-surf_w)//2, screen_height-surf_h-margin # Default
 
-                if slide_doc['processed_image'].mode != 'RGBA': slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGBA')
+                if slide_doc['processed_image'].mode != 'RGBA':
+                    slide_doc['processed_image'] = slide_doc['processed_image'].convert('RGBA')
                 temp_layer = Image.new('RGBA', slide_doc['processed_image'].size, (0,0,0,0))
                 temp_layer.paste(text_render_surface, (pos_x, pos_y))
                 slide_doc['processed_image'] = Image.alpha_composite(slide_doc['processed_image'], temp_layer).convert('RGB')
 
-        # MOVED UPLOAD LOGIC AND DEBUG LOGS HERE
-        logging.info(f"WSS_UPLOAD_DEBUG: About to check processed_image for upload. Type: {type(slide_doc.get('processed_image'))}, Is None: {slide_doc.get('processed_image') is None}, Image Mode (if not None): {slide_doc.get('processed_image').mode if slide_doc.get('processed_image') else 'N/A'}")
-        if slide_doc.get('processed_image'):
-            logging.info("WSS_UPLOAD_DEBUG: Condition `slide_doc.get('processed_image')` is true. Entering upload logic block.")
-            try:
-                image_to_upload = slide_doc['processed_image']
-
-                # Convert Pillow Image to PNG bytes
-                png_buffer = io.BytesIO()
-                image_to_upload.save(png_buffer, format="PNG")
-                png_bytes = png_buffer.getvalue()
-                png_buffer.close()
-
-                # Generate a unique attachment name
-                base_name = slide_doc.get('name', 'website_capture')
-                attachment_name = f"{base_name}_{int(time.time())}.png"
-
-                logging.info(f"Preparing to upload captured website image as '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
-
-                # Fetch current document revision to allow upload
-                doc_for_rev = fetch_document(couchdb_slideshows_db_url, tv_uuid)
-
-                if doc_for_rev and doc_for_rev.get('_rev'):
-                    current_rev = doc_for_rev.get('_rev')
-                    logging.info(f"Fetched current doc revision '{current_rev}' for '{tv_uuid}' before attachment upload.")
-
-                    new_rev_after_upload = upload_attachment_to_couchdb(
-                        couchdb_slideshows_db_url,
-                        tv_uuid,
-                        current_rev,
-                        attachment_name,
-                        png_bytes,
-                        "image/png"
-                    )
-
-                    if new_rev_after_upload:
-                        logging.info(f"Successfully uploaded website screenshot '{attachment_name}'. New doc rev: {new_rev_after_upload}.")
-                    else:
-                        logging.error(f"Failed to upload website screenshot '{attachment_name}' for slide '{slide_doc.get('name', 'N/A')}'.")
-                else:
-                    logging.error(f"Could not fetch document or revision for '{tv_uuid}' to upload attachment for slide '{slide_doc.get('name', 'N/A')}'.")
-
-            except Exception as e:
-                logging.error(f"Error during website screenshot to CouchDB attachment conversion or upload for slide '{slide_doc.get('name', 'N/A')}': {e}", exc_info=True)
-
-        return slide_doc # End of successful capture path
-    else: # Capture failed
-        logging.error(f"Failed to capture and process website slide: {slide_name} ({url})")
-        return None # End of failed capture path
-    # The final 'return slide_doc' that was here is now removed as all paths should have explicit returns.
+        # Synchronously captured image is NOT uploaded here.
+        # It could be added to cache if desired, but background proc should handle that.
+        # For simplicity, just use it for display this one time.
+        return slide_doc
+    else:
+        logging.error(f"[FGProc {slide_name}] Synchronous capture failed for {url}. No image to display.")
+        slide_doc['processed_image'] = None # Ensure it's None
+        return slide_doc # Return slide_doc, main loop will handle None processed_image
 
 
 def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_height, app_config):
@@ -1169,7 +1240,7 @@ def process_slides_from_doc(doc, couchdb_url, tv_uuid, screen_width, screen_heig
         elif slide_type == 'website':
             if screen_width and screen_height:
                 processed_slide_content = fetch_and_process_website_slide(
-                    slide_def, screen_width, screen_height, couchdb_url, tv_uuid # Pass couchdb_url and tv_uuid directly
+                    slide_def, screen_width, screen_height, website_cache_lock
                 )
             else:
                 logging.warning(f"Skipping website slide '{slide_name}' due to missing screen dimensions.")
@@ -1513,6 +1584,52 @@ def main():
                 current_slide_index = 0 # Loop slideshow
 
             slide = current_slides[current_slide_index]
+
+            # Lookahead logic for pre-caching website slides
+            if len(current_slides) > 1: # Only makes sense if there's more than one slide to look ahead to
+                next_slide_index = (current_slide_index + 1) % len(current_slides)
+                next_slide_def = current_slides[next_slide_index]
+
+                if next_slide_def.get('type') == 'website':
+                    next_url = next_slide_def.get('url')
+                    if next_url: # Proceed only if URL is present
+                        needs_processing = False
+                        is_fresh_in_cache = False
+
+                        with website_cache_lock:
+                            if next_url in website_screenshot_cache:
+                                cached_item = website_screenshot_cache[next_url]
+                                if time.time() - cached_item['timestamp'] < WEBSITE_CACHE_EXPIRY_SECONDS:
+                                    is_fresh_in_cache = True
+                                else:
+                                    logging.info(f"[MainLoop] Cache for {next_url} expired. Needs re-capture.")
+
+                            if not is_fresh_in_cache and next_url not in active_processing_urls:
+                                active_processing_urls.add(next_url)
+                                needs_processing = True
+
+                        if needs_processing:
+                            logging.info(f"[MainLoop] Starting background website processing for next slide: {next_url}")
+                            # Arguments for background_website_processor:
+                            # slide_definition, screen_width, screen_height,
+                            # couchdb_slideshows_db_url, tv_uuid,
+                            # active_tasks_set, cache_lock
+                            thread_args = (
+                                next_slide_def, screen_width, screen_height,
+                                couchdb_slideshows_db_url, tv_uuid,
+                                active_processing_urls, website_cache_lock
+                            )
+                            bg_thread = threading.Thread(
+                                target=background_website_processor,
+                                args=thread_args,
+                                daemon=True # Daemon threads will exit when the main program exits
+                            )
+                            bg_thread.start()
+                        elif is_fresh_in_cache:
+                            logging.debug(f"[MainLoop] Next website slide {next_url} is already fresh in cache.")
+                        elif next_url in active_processing_urls: # Must check this again outside lock, or trust 'needs_processing'
+                            logging.debug(f"[MainLoop] Next website slide {next_url} is already being processed.")
+
             slide_duration_s = float(slide.get('duration', DEFAULT_SLIDE_DURATION_S))
             transition_time_ms = int(slide.get('transition_time_ms', DEFAULT_TRANSITION_TIME_MS))
             slide_name = slide.get('name', f"Unnamed Slide {current_slide_index + 1}")
