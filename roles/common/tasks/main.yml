@@ -58,29 +58,82 @@
     state: present
   when: target_os == "ubuntu"
 
-- name: Install display drivers and tools (Ubuntu)
+- name: Install graphics and general X11/Wayland dev libraries for eframe (Ubuntu)
   apt:
     name:
-      - libdrm2
-      - libgbm1
-      - fbset
-      - mesa-utils
-      - libgl1-mesa-dri
-      - libsdl2-2.0-0
-      - libsdl2-dev
-      - libsdl2-image-2.0-0
-      - libsdl2-mixer-2.0-0
-      - libsdl2-ttf-2.0-0
-      # Additional SDL2 video drivers for hardware output
-      - libdrm-dev
-      - libgbm-dev
-      - libegl1-mesa-dev
-      - libgles2-mesa-dev
-      # Framebuffer support
-      - kbd
+      - libdrm2 # Already present, good to keep
+      - libgbm1 # Already present, good to keep
+      - mesa-utils # Already present, good to keep
+      - libgl1-mesa-dri # Already present, good to keep
+      # eframe/winit specific dependencies (many via gtk)
+      - libgtk-3-dev
+      - libxcb-render0-dev
+      - libxcb-shape0-dev
+      - libxcb-xfixes0-dev
+      - libxkbcommon-dev
+      - libgl1-mesa-dev # General OpenGL dev
+      - libegl1-mesa-dev # EGL support
+      - libfontconfig1-dev # Font rendering
+      # Wayland support (optional but good to have)
+      - libwayland-dev
+      - libwayland-cursor-dev
+      - libwayland-egl1-mesa-dev
+      # Misc that might be pulled by GTK but good to be explicit for some systems
+      - libatk1.0-dev
+      - libcairo2-dev
+      - libgdk-pixbuf2.0-dev
+      - libpango1.0-dev
+      - kbd # For framebuffer support, was already there
+      - fbset # For framebuffer support, was already there
     state: present
     update_cache: yes
   when: target_os == "ubuntu"
+
+- name: Install build-essential
+  apt:
+    name: build-essential
+    state: present
+
+- name: Install FFmpeg development libraries
+  apt:
+    name:
+      - libavformat-dev
+      - libavcodec-dev
+      - libavutil-dev
+      - libswscale-dev
+      - libavdevice-dev # Often needed for complete FFmpeg functionality
+      - pkg-config      # Required by ffmpeg-next build scripts
+    state: present
+
+- name: Check if rustup is installed
+  stat:
+    path: "~/.cargo/bin/rustup"
+  register: rustup_stat_result
+
+- name: Download rustup installer
+  get_url:
+    url: https://sh.rustup.rs
+    dest: /tmp/rustup-init.sh
+    mode: '0755'
+  when: not rustup_stat_result.stat.exists
+
+- name: Install rustup
+  shell: /tmp/rustup-init.sh -y --no-modify-path --default-toolchain stable
+  args:
+    creates: "~/.cargo/bin/rustup"
+  when: not rustup_stat_result.stat.exists
+  environment:
+    RUSTUP_HOME: "~/.cargo"
+    CARGO_HOME: "~/.cargo"
+
+- name: Add cargo to PATH
+  lineinfile:
+    path: "~/.bashrc"
+    line: 'export PATH="$HOME/.cargo/bin:$PATH"'
+    create: yes
+  # Ansible's become doesn't work well with ~ expansion in shell module
+  # So, we run this as the remote user directly for `source ~/.bashrc` to work in subsequent steps if needed.
+  # However, systemd services will need explicit PATH or full path to cargo/rustc if not system-wide.
 
 - name: Install DirectFB (Ubuntu - optional)
   apt:
@@ -148,40 +201,8 @@
 - name: Install Python libraries in virtual environment (except pygame)
   pip:
     name:
-      - requests
-      - opencv-python
-      - numpy
-      - selenium
-      - Pillow
-      - urllib3
+      - requests # Potentially used by hdmi_sleep.py or other utils
+      - urllib3  # Potentially used by hdmi_sleep.py or other utils
+      # opencv-python, numpy, selenium, Pillow removed as they were for Python slideshow
     virtualenv: "{{ venv_path }}"
-
-- name: Rebuild pygame with proper SDL2 support (Ubuntu)
-  block:
-    - name: Uninstall existing pygame
-      pip:
-        name: pygame
-        state: absent
-        virtualenv: "{{ venv_path }}"
-      ignore_errors: yes
-    
-    - name: Clear pip cache
-      shell: "{{ venv_path }}/bin/pip cache purge"
-      ignore_errors: yes
-    
-    - name: Install pygame with proper SDL2 libraries
-      pip:
-        name: pygame
-        virtualenv: "{{ venv_path }}"
-        extra_args: "--force-reinstall --no-cache-dir --no-binary=pygame"
-      environment:
-        # Ensure pygame uses system SDL2 libraries
-        SDL_CONFIG: "/usr/bin/sdl2-config"
-        PKG_CONFIG_PATH: "/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig"
-  when: target_os == "ubuntu"
-
-- name: Install pygame normally for Raspberry Pi OS
-  pip:
-    name: pygame
-    virtualenv: "{{ venv_path }}"
-  when: target_os == "raspios"
+# Pygame related tasks are removed as pygame is no longer used.

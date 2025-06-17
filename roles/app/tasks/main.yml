@@ -4,13 +4,14 @@
     dest: /etc/slideshow.conf
     mode: 0644
 
-- name: Deploy slideshow script
-  copy:
-    src: slideshow.py
-    dest: /usr/local/bin/slideshow.py
-    mode: 0755
-    owner: "{{ service_user }}"
-    group: "{{ service_group }}"
+# Python slideshow script no longer needed
+# - name: Deploy slideshow script
+#   copy:
+#     src: slideshow.py
+#     dest: /usr/local/bin/slideshow.py
+#     mode: 0755
+#     owner: "{{ service_user }}"
+#     group: "{{ service_group }}"
 
 - name: Deploy HDMI sleep script
   copy:
@@ -20,27 +21,29 @@
     owner: "{{ service_user }}"
     group: "{{ service_group }}"
 
-- name: Deploy pygame diagnostic script
-  copy:
-    src: pygame_diagnostic.py
-    dest: /usr/local/bin/pygame_diagnostic.py
-    mode: 0755
-    owner: "{{ service_user }}"
-    group: "{{ service_group }}"
+# Pygame diagnostic script no longer needed
+# - name: Deploy pygame diagnostic script
+#   copy:
+#     src: pygame_diagnostic.py
+#     dest: /usr/local/bin/pygame_diagnostic.py
+#     mode: 0755
+#     owner: "{{ service_user }}"
+#     group: "{{ service_group }}"
 
-- name: Create slideshow log file with proper permissions
-  file:
-    path: /var/log/slideshow.log
-    state: touch
-    owner: "{{ service_user }}"
-    group: "{{ service_group }}"
-    mode: 0644
+# Log file for Python script no longer needed; Rust app uses systemd journal
+# - name: Create slideshow log file with proper permissions
+#   file:
+#     path: /var/log/slideshow.log
+#     state: touch
+#     owner: "{{ service_user }}"
+#     group: "{{ service_group }}"
+#     mode: 0644
 
-- name: Deploy slideshow service
-  template:
-    src: slideshow.service.j2
-    dest: /etc/systemd/system/slideshow.service
-    mode: 0644
+# - name: Deploy slideshow service
+#   template:
+#     src: slideshow.service.j2
+#     dest: /etc/systemd/system/slideshow.service
+#     mode: 0644
 
 - name: Deploy HDMI sleep service
   template:
@@ -54,8 +57,41 @@
     enabled: yes
     state: started
   loop:
-    - slideshow
+    # - slideshow # Commented out to disable python version
     - hdmi_sleep
+
+- name: Copy slideshow_rs project to target
+  copy:
+    src: slideshow_rs # This should be relative to the playbook directory, assuming slideshow_rs is at the root
+    dest: /opt/slideshow_rs
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+    mode: '0755'
+  become: yes
+
+- name: Build slideshow_rs application
+  shell: |
+    export PATH="$HOME/.cargo/bin:$PATH"
+    cd /opt/slideshow_rs && cargo build --release
+  args:
+    chdir: /opt/slideshow_rs
+  become: yes # Might need to run as service_user if permissions allow, or adjust ownership after
+  # become_user: "{{ service_user }}" # Alternative, but PATH might be an issue for cargo
+
+- name: Deploy slideshow_rs service configuration
+  template:
+    src: slideshow_rs.service.j2 # This file will be created in the next step
+    dest: /etc/systemd/system/slideshow_rs.service
+    mode: 0644
+  become: yes
+
+- name: Enable and start slideshow_rs service
+  systemd:
+    name: slideshow_rs
+    enabled: yes
+    state: started
+    daemon_reload: yes # Ensure systemd reloads after new service file
+  become: yes
 
 - name: Create slideshow manager web directory
   file:

@@ -1,0 +1,21 @@
+[Unit]
+Description=Slideshow RS Application
+After=network.target graphical.target
+Requires=graphical.target
+
+[Service]
+Type=simple
+User={{ service_user }}
+Group={{ service_group }}
+WorkingDirectory=/opt/slideshow_rs
+ExecStart=/opt/slideshow_rs/target/release/slideshow_rs
+Restart=always
+RestartSec=5
+Environment="DISPLAY=:0"
+Environment="RUST_LOG=info"
+# Add other environment variables if eframe/egui needs them for specific backends on Pi (e.g., related to framebuffer)
+# Environment="EGL_PLATFORM=fbdev" # Example, might be needed for some setups
+# Environment="WINIT_UNIX_BACKEND=x11" # Or "wayland" or "x11" depending on the environment
+
+[Install]
+WantedBy=default.target
